@@ -20,7 +20,7 @@ File Format
 Only what is absolutely necesarry to read archives is reverse engineered.
 
 Byte order is little endian and the character encoding of file names seems to be
-ASCII (or ISO-8859-1/UTF-8 that coincidentally only uses ASCII compaiple
+ASCII (or ISO-8859-1/UTF-8 that coincidentally only uses ASCII compatiple
 characters).
 
 Offsets and sizes seem to be 64bit or at least unsigned 32bit integers. If

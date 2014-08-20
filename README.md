@@ -43,8 +43,10 @@ contain offset pointers to the data records.
 
 ### Data Record
 
-Maybe one of the two sizes is a relative offset to the next data record so that
-in future versions there could be more fields after the data?
+There are two fields that give the size of the data. My guess is that the pak
+format supports optional compression and one size is the compressed size and
+the other the uncompressed. If that is true then all archive files I have access
+to don't use compression, because for all these archives the sizes match exactly.
 
     Offset  Size  Type      Description
          0     8  ?         ? (always 0)

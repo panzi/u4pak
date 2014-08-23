@@ -41,7 +41,7 @@ In order to parse a file you need to read the footer first. The footer contains
 an offset pointer to the start of the index records. The index records then
 contain offset pointers to the data records.
 
-### Data Record
+### Entry
 
 There are two fields that give the size of the data. My guess is that the pak
 format supports optional compression and one size is the compressed size and
@@ -49,31 +49,48 @@ the other the uncompressed. If that is true then all archive files I have access
 to don't use compression, because for all these archives the sizes match exactly.
 
     Offset  Size  Type      Description
-         0     8  ?         ? (always 0)
-         8     8  uint64_t  data size (N)
-        16     8  uint64_t  data size again
-        24    29  ?         ? (first 4 and last 5 bytes are always 0)
-        53     N  byte[N]   file data
+         0     8  int64     offset
+         8     8  int64     size (N)
+        16     8  int64     uncompressed size
+        24     4  int32     compression method - 0x00 = none, 0x01 = zlib, 0x10 bias memory, 0x20 bias speed
+if version is 1 or smaller
+        28     8  int64     timestamp
+end
+        36    20  uint8[20] sha1 hash
+if version is 3 or bigger
+  if compression method is not 0x00
+        56     4  uint32_t  block count (M)
+        60  M*16  CB[M]     compression blocks
+  end
+         ?     1  uint8     is encrypted
+       ?+1     8  uint32    compression block size
+       ?+9     N  uint8[N]  file data
 
+### compression block (CB)
+
+    Offset  Size  Type      Description
+         0     8  int64     start offset - Offset of the start of a compression block. Offset is absolute.
+         8     8  int64     end offset   - Offset of the end of a compression block. This may not align completely with the start of the next block. Offset is absolute.
+		
 ### Index Record
 
     Offset  Size  Type      Description
-         0    18  ?         ?
-        18     4  uint32_t  name size including terminating nil (N)
-        22     N  char[N]   file name (path seperator is '/', name does NOT start with '/')
-      N+22     8  uint64_t  data record offset
-      N+28     8  uint64_t  data size
-      N+36     8  uint64_t  data size again
-      N+44    11  ?         ? (first 4 bytes are always 0)
+         0     4  int32     mount point size (N)
+		 4     N  char[N]   mount point
+	   4+N     4  int32     entries count
+for entries count
+    8+N+ce     4  int32     filename size (M)
+   12+N+ce     M  char[M]   filename
+ 12+N+ce+M   ...  Entry     Entry
 
 ### Footer
 
-Size: 62 bytes
-
     Offset  Size  Type      Description
-         0    26  ?         ?
-        26     8  uint64_t  offset of index
-        34    28  ?         ?
+         0     4  uint32    magic - 0x5A6F12E1
+         4     4  int32     version - can be 1, 2, or 3
+         8     8  int64     index offset
+        16     8  int64     index size
+        24    20  uint8[20] index sha1 hash
 
 Related Projects
 ----------------

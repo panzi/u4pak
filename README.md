@@ -53,18 +53,19 @@ to don't use compression, because for all these archives the sizes match exactly
          8     8  int64     size (N)
         16     8  int64     uncompressed size
         24     4  int32     compression method - 0x00 = none, 0x01 = zlib, 0x10 bias memory, 0x20 bias speed
-if version is 1 or smaller
+    if version is 1 or smaller
         28     8  int64     timestamp
-end
+    end
         36    20  uint8[20] sha1 hash
-if version is 3 or bigger
-  if compression method is not 0x00
+    if version is 3 or bigger
+     if compression method is not 0x00
         56     4  uint32_t  block count (M)
         60  M*16  CB[M]     compression blocks
-  end
+     end
          ?     1  uint8     is encrypted
        ?+1     8  uint32    compression block size
        ?+9     N  uint8[N]  file data
+    end
 
 ### compression block (CB)
 

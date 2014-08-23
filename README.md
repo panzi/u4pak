@@ -64,8 +64,8 @@ to don't use compression, because for all these archives the sizes match exactly
      end
          ?     1  uint8     is encrypted
        ?+1     8  uint32    compression block size
-       ?+9     N  uint8[N]  file data
     end
+       ?+9     N  uint8[N]  file data
 
 ### compression block (CB)
 

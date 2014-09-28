@@ -25,9 +25,14 @@ from __future__ import with_statement, division, print_function
 
 import os
 import sys
-import struct
 import hashlib
+import locale
 
+# for propper string sorting
+locale.setlocale(locale.LC_ALL, '')
+
+from locale import strcoll
+from struct import unpack as st_unpack, pack as st_pack
 from collections import OrderedDict, namedtuple
 from io import DEFAULT_BUFFER_SIZE
 from binascii import hexlify
@@ -39,26 +44,38 @@ except ImportError:
 else:
 	HAS_LLFUSE = True
 
-__all__ = 'read_index',
+__all__ = 'read_index', 'pack'
 
+# for Python 2/3 compatibility:
 try:
 	xrange
 except NameError:
 	xrange = range
 
+try:
+	cmp
+except NameError:
+	def cmp(a, b):
+		return (a > b) - (a < b)
+
 # for Python < 3.3 and Windows
 def highlevel_sendfile(outfile,infile,offset,size):
 	infile.seek(offset,0)
+	buf_size = DEFAULT_BUFFER_SIZE
+	buf = bytearray(buf_size)
 	while size > 0:
-		if size > 2 ** 20:
-			chunk_size = 2 ** 20
+		if size >= buf_size:
+			n = infile.readinto(buf)
+			if n < buf_size:
+				raise IOError("unexpected end of file")
+			outfile.write(buf)
+			size -= buf_size
 		else:
-			chunk_size = size
-		size -= chunk_size
-		data = infile.read(chunk_size)
-		outfile.write(data)
-		if len(data) < chunk_size:
-			raise IOError("unexpected end of file")
+			data = infile.read(size)
+			if len(data) < size:
+				raise IOError("unexpected end of file")
+			outfile.write(data)
+			size = 0
 
 if hasattr(os, 'sendfile'):
 	def sendfile(outfile,infile,offset,size):
@@ -119,27 +136,6 @@ class Pak(object):
 		elif self.version == 3:
 			read_record = read_record_v3
 
-		# check metadata
-		for r1 in self:
-			stream.seek(r1.offset, 0)
-			r2 = read_record(stream, r1.filename)
-
-			if r2.offset != 0:
-				callback(r2, 'data record offset field is no 0 but %d' % r2.offset)
-
-			if not same_metadata(r1, r2):
-				callback(r1, 'metadata missmatch:\n%s' % metadata_diff(r1, r2))
-
-			if r1.compression_method not in COMPR_METHODS:
-				callback(r1, 'unknown compression method: 0x%02x' % r1.compression_method)
-
-			if r1.compression_method != COMPR_NONE and r1.compressed_size != r1.uncompressed_size:
-				callback(r1, 'file is not compressed but compressed size (%d) differes from uncompressed size (%d)' %
-					(r1.compressed_size, r1.uncompressed_size))
-
-			if r1.data_offset + r1.compressed_size > index_offset:
-				callback('data bleeds into index')
-
 		def check_data(ctx, offset, size, sha1):
 			hasher = hashlib.sha1()
 			stream.seek(offset, 0)
@@ -162,13 +158,33 @@ class Pak(object):
 					hexlify(sha1).decode('latin1')))
 
 		# check index sha1 sum
-		check_data("archive index", index_offset, self.index_size, self.index_sha1)
+		check_data("<archive index>", index_offset, self.index_size, self.index_sha1)
 
-		# check file sha1 sums
-		for record in self:
-			# XXX: don't know if the sha1 is of the comressed (and encrypted) data
-			#      or if it would need uncompressing (and decrypting)
-			check_data(record, record.data_offset, record.compressed_size, record.sha1)
+		for r1 in self:
+			stream.seek(r1.offset, 0)
+			r2 = read_record(stream, r1.filename)
+
+			# check index metadata
+			if r2.offset != 0:
+				callback(r2, 'data record offset field is no 0 but %d' % r2.offset)
+
+			if not same_metadata(r1, r2):
+				callback(r1, 'metadata missmatch:\n%s' % metadata_diff(r1, r2))
+
+			if r1.compression_method not in COMPR_METHODS:
+				callback(r1, 'unknown compression method: 0x%02x' % r1.compression_method)
+
+			if r1.compression_method != COMPR_NONE and r1.compressed_size != r1.uncompressed_size:
+				callback(r1, 'file is not compressed but compressed size (%d) differes from uncompressed size (%d)' %
+					(r1.compressed_size, r1.uncompressed_size))
+
+			if r1.data_offset + r1.compressed_size > index_offset:
+				callback('data bleeds into index')
+
+			# check file sha1 sum
+			# XXX: I don't know if the sha1 is of the comressed (and encrypted) data
+			#      or if it would need to uncompress (and decrypt) the data first.
+			check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
 
 	def unpack(self,stream,outdir=".",callback=lambda name: None):
 		for record in self:
@@ -204,7 +220,7 @@ class Pak(object):
 				cmeth = record.compression_method
 
 				if cmeth == COMPR_NONE:
-					out.write("%10u  %10s                            %s  %s%s" % (
+					out.write("%10u  %10s             -           -  %s  %s%s" % (
 						record.data_offset, size, sha1, record.filename, delim))
 				else:
 					out.write("%10u  %10s  %12s  %10s  %s  %s%s" % (
@@ -347,36 +363,146 @@ class RecordV3(Record):
 		return data_offset
 
 def read_path(stream):
-	path_len, = struct.unpack('<I',stream.read(4))
-	return stream.read(path_len).rstrip(b'\0').decode('ascii').replace('/',os.path.sep)
+	path_len, = st_unpack('<I',stream.read(4))
+	return stream.read(path_len).rstrip(b'\0').decode('utf-8').replace('/',os.path.sep)
+
+def pack_path(path):
+	path = path.replace(os.path.sep,'/').encode('utf-8') + b'\0'
+	return st_pack('<I', len(path)) + path
+
+def write_path(stream,path):
+	data = pack_path(path)
+	stream.write(data)
+	return data
 
 def read_record_v1(stream, filename):
-	return RecordV1(filename, *struct.unpack('<QQQIQ20s',stream.read(56)))
+	return RecordV1(filename, *st_unpack('<QQQIQ20s',stream.read(56)))
 
 def read_record_v2(stream, filename):
-	return RecordV2(filename, *struct.unpack('<QQQI20s',stream.read(48)))
+	return RecordV2(filename, *st_unpack('<QQQI20s',stream.read(48)))
 
 def read_record_v3(stream, filename):
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
-		struct.unpack('<QQQI20s',stream.read(48))
+		st_unpack('<QQQI20s',stream.read(48))
 	
 	if compression_method != COMPR_NONE:
-		block_count, = struct.unpack('<I',stream.read(4))
-		blocks = struct.unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
+		block_count, = st_unpack('<I',stream.read(4))
+		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
 		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0,block_count,2)]
 	else:
 		blocks = None
 
-	encrypted, compression_block_size = struct.unpack('<BI',stream.read(5))
+	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
 	                sha1, blocks, encrypted != 0, compression_block_size)
+
+def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+	if compression_method != COMPR_NONE:
+		raise NotImplementedError("compression is not implemented")
+	
+	if encrypted:
+		raise NotImplementedError("encryption is not implemented")
+
+	buf_size = DEFAULT_BUFFER_SIZE
+	buf = bytearray(buf_size)
+	bytes_left = size
+	hasher = hashlib.sha1()
+	while bytes_left > 0:
+		if bytes_left >= buf_size:
+			n = fh.readinto(buf)
+			data = buf
+			if n < buf_size:
+				raise IOError('unexpected end of file')
+		else:
+			data = fh.read(bytes_left)
+			n = len(data)
+			if n < bytes_left:
+				raise IOError('unexpected end of file')
+		bytes_left -= n
+		hasher.update(data)
+		archive.write(data)
+
+	return size, hasher.digest()
+
+def write_record_v1(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+	if encrypted:
+		raise ValueError('version 1 does not support encryption')
+
+	record_offset = archive.tell()
+
+	st = os.fstat(fh.fileno())
+	size = st.st_size
+	# XXX: timestamp probably needs multiplication with some factor?
+	record = st_pack('<16xQIQ20x',size,compression_method,int(st.st_mtime))
+	archive.write(record)
+
+	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
+	data_end = archive.tell()
+
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
+
+	archive.seek(record_offset+36, 0)
+	archive.write(sha1)
+
+	archive.seek(data_end, 0)
+
+	return st_pack('<QQQIQ20s',record_offset,compressed_size,size,compression_method,int(st.st_mtime),sha1)
+
+def write_record_v2(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+	if encrypted:
+		raise ValueError('version 2 does not support encryption')
+
+	record_offset = archive.tell()
+
+	st = os.fstat(fh.fileno())
+	size = st.st_size
+	record = st_pack('<16xQI20x',size,compression_method)
+	archive.write(record)
+
+	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
+	data_end = archive.tell()
+
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
+
+	archive.seek(record_offset+28, 0)
+	archive.write(sha1)
+
+	archive.seek(data_end, 0)
+
+	return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1)
+
+def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+	if compression_method != COMPR_NONE:
+		raise NotImplementedError("compression is not implemented")
+
+	record_offset = archive.tell()
+
+	st = os.fstat(fh.fileno())
+	size = st.st_size
+	record = st_pack('<16xQI20xBI',size,compression_method,int(encrypted),compression_block_size)
+	archive.write(record)
+
+	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
+	data_end = archive.tell()
+
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
+
+	archive.seek(record_offset+28, 0)
+	archive.write(sha1)
+
+	archive.seek(data_end, 0)
+
+	return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
 def read_index(stream,check_integrity=False):
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
-	magic, version, index_offset, index_size, index_sha1 = struct.unpack('<IIQQ20s',footer)
+	magic, version, index_offset, index_size, index_sha1 = st_unpack('<IIQQ20s',footer)
 
 	if magic != 0x5A6F12E1:
 		raise ValueError('illegal file magic: 0x%08x' % magic)
@@ -399,7 +525,7 @@ def read_index(stream,check_integrity=False):
 	stream.seek(index_offset, 0)
 
 	mount_point = read_path(stream)
-	entry_count = struct.unpack('<I',stream.read(4))[0]
+	entry_count = st_unpack('<I',stream.read(4))[0]
 
 	pak = Pak(version, index_offset, index_size, footer_offset, index_sha1, mount_point)
 
@@ -415,6 +541,59 @@ def read_index(stream,check_integrity=False):
 		pak.check_integrity(stream)
 
 	return pak
+
+def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
+         encrypted=False,compression_block_size=0,callback=lambda name: None):
+	if version == 1:
+		write_record = write_record_v1
+
+	elif version == 2:
+		write_record = write_record_v2
+
+	elif version == 3:
+		write_record = write_record_v3
+	
+	else:
+		raise ValueError('version not supported: %d' % version)
+
+	files = []
+	for name in files_or_dirs:
+		if os.path.isdir(name):
+			for dirpath, dirnames, filenames in os.walk(name):
+				for filename in filenames:
+					files.append(os.path.join(dirpath,filename))
+		else:
+			files.append(name)
+
+	files.sort(cmp=strcoll)
+
+	records = []
+	for filename in files:
+		callback(filename)
+		with open(filename,"rb") as fh:
+			record = write_record(stream,fh)
+			records.append((filename, record))
+
+	hasher = hashlib.sha1()
+	index_offset = stream.tell()
+
+	index_header = pack_path(mount_point) + st_pack('<I',len(records))
+	index_size   = len(index_header)
+	hasher.update(index_header)
+	stream.write(index_header)
+
+	for filename, record in records:
+		filename = pack_path(filename)
+		hasher.update(filename)
+		stream.write(filename)
+		index_size += len(filename)
+
+		hasher.update(record)
+		stream.write(record)
+		index_size += len(record)
+
+	index_sha1 = hasher.digest()
+	stream.write(st_pack('<IIQQ20s', 0x5A6F12E1, version, index_offset, index_size, index_sha1))
 
 def shall_unpack(paths,name):
 	path = name.split(os.path.sep)
@@ -476,13 +655,6 @@ SORT_ALIASES = {
 	"N": "-name"
 }
 
-# for Python 3
-try:
-	cmp
-except NameError:
-	def cmp(a, b):
-		return (a > b) - (a < b)
-
 CMP_FUNCS = {
 	"size":  lambda lhs, rhs: cmp(lhs.uncompressed_size, rhs.uncompressed_size),
 	"-size": lambda lhs, rhs: cmp(rhs.uncompressed_size, lhs.uncompressed_size),
@@ -493,8 +665,8 @@ CMP_FUNCS = {
 	"offset":  lambda lhs, rhs: cmp(lhs.offset, rhs.offset),
 	"-offset": lambda lhs, rhs: cmp(rhs.offset, lhs.offset),
 
-	"name":  lambda lhs, rhs: cmp(lhs.filename, rhs.filename),
-	"-name": lambda lhs, rhs: cmp(rhs.filename, lhs.filename)
+	"name":  lambda lhs, rhs: strcoll(lhs.filename, rhs.filename),
+	"-name": lambda lhs, rhs: strcoll(rhs.filename, lhs.filename)
 }
 
 def sort_func(sort):
@@ -899,10 +1071,14 @@ def main(argv):
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
-#	pack_parser = subparsers.add_parser('pack',aliases=('c',),help="pack archive")
-#	pack_parser.set_defaults(command='pack')
-#	pack_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
-#	pack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to pack')
+	pack_parser = subparsers.add_parser('pack',aliases=('c',),help="pack archive")
+	pack_parser.set_defaults(command='pack')
+	pack_parser.add_argument('--archive-version',type=int,choices=[1,2,3],default=3,help='archive file format version')
+	pack_parser.add_argument('--mount-point',type=str,default=os.path.join('..','..','..',''),help='archive mount point relative to its path')
+	add_print0_arg(pack_parser)
+	add_verbose_arg(pack_parser)
+	add_archive_arg(pack_parser)
+	pack_parser.add_argument('files', metavar='file', nargs='+', help='files and directories to pack')
 
 	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
 	list_parser.set_defaults(command='list')
@@ -917,7 +1093,8 @@ def main(argv):
 
 	check_parser = subparsers.add_parser('check',aliases=('c',),help='check archive integrity')
 	check_parser.set_defaults(command='check')
-	check_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
+	add_print0_arg(check_parser)
+	add_archive_arg(check_parser)
 
 	mount_parser = subparsers.add_parser('mount',aliases=('m',),help='fuse mount archive')
 	mount_parser.set_defaults(command='mount')
@@ -977,7 +1154,13 @@ def main(argv):
 				pak.unpack(stream,args.dir,callback)
 
 	elif args.command == 'pack':
-		raise NotImplementedError('pack is not implemeted yet')
+		if args.verbose:
+			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
+		else:
+			callback = lambda name: None
+
+		with open(args.archive,"wb") as stream:
+			pack(stream,args.files,args.mount_point,args.archive_version,callback=callback)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:
@@ -994,17 +1177,26 @@ def add_integrity_arg(parser):
 	parser.add_argument('-c','--check-integrity',action='store_true',default=False,
 		help='perform extra integrity checks')
 
-def add_common_args(parser):
+def add_archive_arg(parser):
 	parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
+
+def add_print0_arg(parser):
 	parser.add_argument('-0','--print0',action='store_true',default=False,
 		help='seperate file names with nil bytes')
+
+def add_verbose_arg(parser):
 	parser.add_argument('-v','--verbose',action='store_true',default=False,
 		help='print verbose output')
+
+def add_common_args(parser):
+	add_archive_arg(parser)
+	add_print0_arg(parser)
+	add_verbose_arg(parser)
 	add_integrity_arg(parser)
 
 if __name__ == '__main__':
 	try:
 		main(sys.argv[1:])
-	except Exception as exc:
+	except (ValueError, NotImplementedError, IOError) as exc:
 		sys.stderr.write("%s\n" % exc)
 		sys.exit(1)

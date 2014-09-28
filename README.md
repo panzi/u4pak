@@ -8,6 +8,7 @@ Basic usage:
     u4pak.py list <archive>                 - list contens of .pak archive
     u4pak.py check <archive>                - check archive integrity
     u4pak.py unpack <archive>               - extract .pak archive
+    u4pak.py pack <archive> <files>         - create .pak archive
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
 
 Only unencryped and uncompressed archives of version 1, 2, and 3 are supported.

@@ -11,6 +11,7 @@ Basic usage:
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
 
 Only unencryped and uncompressed archives of version 1, 2, and 3 are supported.
+Note that only version 2 and 3 are tested.
 
 The `mount` command depends on the [llfuse](https://code.google.com/p/python-llfuse/)
 Python package. If it's not available the rest is still working.
@@ -49,16 +50,16 @@ contain offset pointers to the data records.
 ### Record
 
     Offset  Size  Type         Description
-       S+8     8  uint64_t     offset
-      S+16     8  uint64_t     size (N)
-      S+24     8  uint64_t     uncompressed size
-      S+32     4  uint32_t     compression method:
+         0     8  uint64_t     offset
+         8     8  uint64_t     size (N)
+        16     8  uint64_t     uncompressed size
+        24     4  uint32_t     compression method:
                                   0x00 ... none
                                   0x01 ... zlib
                                   0x10 ... bias memory
                                   0x20 ... bias speed
     if version <= 1
-      S+36     8  uint64_t     timestamp
+        28     8  uint64_t     timestamp
     end
          ?    20  uint8_t[20]  data sha1 hash
     if version >= 3

@@ -1,7 +1,7 @@
 u4pak
 =====
 
-Unpack, list, check and mount Unreal Engine 4 .pak archives.
+Unpack, pack, list, check and mount Unreal Engine 4 .pak archives.
 
 Basic usage:
 

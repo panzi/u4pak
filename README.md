@@ -1,13 +1,16 @@
 u4pak
 =====
 
-Unpack, list and mount Unreal Engine 4 .pak archives.
+Unpack, list, check and mount Unreal Engine 4 .pak archives.
 
 Basic usage:
 
-	u4pak.py list <archive>                 - list contens of .pak archive
-	u4pak.py unpack <archive>               - extract .pak archive
-	u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
+    u4pak.py list <archive>                 - list contens of .pak archive
+    u4pak.py check <arcive>                 - check archive integrity
+    u4pak.py unpack <archive>               - extract .pak archive
+    u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
+
+Only unencryped and uncompressed archives of version 1, 2, and 3 are supported.
 
 The `mount` command depends on the [llfuse](https://code.google.com/p/python-llfuse/)
 Python package. If it's not available the rest is still working.
@@ -34,64 +37,82 @@ for Linux (which contains a 2.5 GB .pak file).
 Basic layout:
 
  * Data Records
- * Index Records
+ * Index
+  * Index Header
+  * Index Records
  * Footer
 
 In order to parse a file you need to read the footer first. The footer contains
 an offset pointer to the start of the index records. The index records then
 contain offset pointers to the data records.
 
-### Entry
+### Record
 
-There are two fields that give the size of the data. My guess is that the pak
-format supports optional compression and one size is the compressed size and
-the other the uncompressed. If that is true then all archive files I have access
-to don't use compression, because for all these archives the sizes match exactly.
-
-    Offset  Size  Type      Description
-         0     8  int64     offset
-         8     8  int64     size (N)
-        16     8  int64     uncompressed size
-        24     4  int32     compression method - 0x00 = none, 0x01 = zlib, 0x10 bias memory, 0x20 bias speed
-    if version is 1 or smaller
-        28     8  int64     timestamp
+    Offset  Size  Type         Description
+       S+8     8  uint64_t     offset
+      S+16     8  uint64_t     size (N)
+      S+24     8  uint64_t     uncompressed size
+      S+32     4  uint32_t     compression method:
+                                  0x00 ... none
+                                  0x01 ... zlib
+                                  0x10 ... bias memory
+                                  0x20 ... bias speed
+    if version <= 1
+      S+36     8  uint64_t     timestamp
     end
-        36    20  uint8[20] sha1 hash
-    if version is 3 or bigger
-     if compression method is not 0x00
-        56     4  uint32_t  block count (M)
-        60  M*16  CB[M]     compression blocks
+         ?    20  uint8_t[20]  data sha1 hash
+    if version >= 3
+     if compression method != 0x00
+      ?+20     4  uint32_t     block count (M)
+      ?+24  M*16  CB[M]        compression blocks
      end
-         ?     1  uint8     is encrypted
-       ?+1     8  uint32    compression block size
+         ?     1  uint8_t      is encrypted
+       ?+1     4  uint32_t     compression block size
     end
-       ?+9     N  uint8[N]  file data
 
-### compression block (CB)
+### Compression Block (CB)
 
-    Offset  Size  Type      Description
-         0     8  int64     start offset - Offset of the start of a compression block. Offset is absolute.
-         8     8  int64     end offset   - Offset of the end of a compression block. This may not align completely with the start of the next block. Offset is absolute.
-		
+Size: 16 bytes
+
+    Offset  Size  Type         Description
+         0     8  uint64_t     start offset:
+                               Absolute offset of the start of the compression block.
+         8     8  uint64_t     end offset:
+                               Absolute offset of the end of the compression block.
+                               This may not align completely with the start of the
+                               next block.
+
+### Data Record
+
+    Offset  Size  Type            Description
+         0     ?  Record          file metadata (offset field is 0, N = compressed_size)
+         ?     N  uint8_t[N]      file data
+
 ### Index Record
 
-    Offset  Size  Type      Description
-         0     4  int32     mount point size (N)
-		 4     N  char[N]   mount point
-	   4+N     4  int32     entries count
-for entries count
-    8+N+ce     4  int32     filename size (M)
-   12+N+ce     M  char[M]   filename
- 12+N+ce+M   ...  Entry     Entry
+    Offset  Size  Type            Description
+         0     4  uint32_t        file name size (S)
+         4     S  char[S]         file name
+       4+S     ?  Record          file metadata
+
+### Index
+
+    Offset  Size  Type            Description
+         0     4  uint32_t        mount point size (S)
+         4     S  char[S]         mount point
+       S+4     4  uint32_t        record count (N)
+       S+8     ?  IndexRecord[N]  records
 
 ### Footer
 
-    Offset  Size  Type      Description
-         0     4  uint32    magic - 0x5A6F12E1
-         4     4  int32     version - can be 1, 2, or 3
-         8     8  int64     index offset
-        16     8  int64     index size
-        24    20  uint8[20] index sha1 hash
+Size: 44 bytes
+
+    Offset  Size  Type         Description
+         0     4  uint32_t     magic: 0x5A6F12E1
+         4     4  uint32_t     version: 1, 2, or 3
+         8     8  uint64_t     index offset
+        16     8  uint64_t     index size
+        24    20  uint8_t[20]  index sha1 hash
 
 Related Projects
 ----------------

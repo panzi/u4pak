@@ -194,7 +194,9 @@ class Pak(object):
 			count = 0
 			sum_size = 0
 			out.write("Pak Version: %d%s" % (self.version, delim))
-			out.write("Index SHA1: %s%s" % (hexlify(self.index_sha1).decode('latin1'), delim))
+			out.write("Index SHA1:  %s%s" % (hexlify(self.index_sha1).decode('latin1'), delim))
+			out.write("Mount Point: %s%s" % (self.mount_point, delim))
+			out.write(delim)
 			out.write("    Offset        Size  Compr-Method  Compr-Size  SHA1                                      Name%s" % delim)
 			for record in records:
 				size  = size_to_str(record.uncompressed_size)
@@ -213,7 +215,7 @@ class Pak(object):
 				sum_size += record.uncompressed_size
 			out.write("%d file(s) (%s) %s" % (count, size_to_str(sum_size), delim))
 		else:
-			for record in index:
+			for record in records:
 				out.write("%s%s" % (record.filename, delim))
 
 	def mount(self,stream,mountpt,foreground=False,debug=False):
@@ -897,6 +899,11 @@ def main(argv):
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
+#	pack_parser = subparsers.add_parser('pack',aliases=('c',),help="pack archive")
+#	pack_parser.set_defaults(command='pack')
+#	pack_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
+#	pack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to pack')
+
 	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
 	list_parser.set_defaults(command='list')
 	list_parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
@@ -968,6 +975,9 @@ def main(argv):
 				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
 			else:
 				pak.unpack(stream,args.dir,callback)
+
+	elif args.command == 'pack':
+		raise NotImplementedError('pack is not implemeted yet')
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:

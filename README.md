@@ -6,7 +6,7 @@ Unpack, list, check and mount Unreal Engine 4 .pak archives.
 Basic usage:
 
     u4pak.py list <archive>                 - list contens of .pak archive
-    u4pak.py check <arcive>                 - check archive integrity
+    u4pak.py check <archive>                - check archive integrity
     u4pak.py unpack <archive>               - extract .pak archive
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
 

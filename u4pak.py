@@ -101,6 +101,97 @@ def raise_check_error(ctx, message):
 	else:
 		raise ValueError("%s: %s" % (ctx, message))
 
+class FragInfo(object):
+	__slots__ = ('__frags','__size')
+
+	def __init__(self,size,frags=None):
+		self.__size  = size
+		self.__frags = []
+		if frags:
+			for start, end in frags:
+				self.add(start, end)
+
+	@property
+	def size(self):
+		return self.__size
+
+	def __iter__(self):
+		return iter(self.__frags)
+
+	def __len__(self):
+		return len(self.__frags)
+
+	def __repr__(self):
+		return 'FragInfo(%r,%r)' % (self.__size, self.__frags)
+
+	def add(self,new_start,new_end):
+		if new_start >= new_end:
+			return
+
+		elif new_start >= self.__size or new_end > self.__size:
+			raise IndexError("range out of bounds: (%r, %r]" % (new_start, new_end))
+
+		frags = self.__frags
+		for i, (start, end) in enumerate(frags):
+			if new_end < start:
+				frags.insert(i, (new_start, new_end))
+				return
+
+			elif new_start <= start:
+				if new_end <= end:
+					frags[i] = (new_start, end)
+					return
+
+			elif new_start <= end:
+				if new_end > end:
+					new_start = start
+			else:
+				continue
+
+			j = i+1
+			n = len(frags)
+			while j < n:
+				next_start, next_end = frags[j]
+				if next_start <= new_end:
+					j += 1
+					if next_end > new_end:
+						new_end = next_end
+						break
+				else:
+					break
+
+			frags[i:j] = [(new_start, new_end)]
+			return
+
+		frags.append((new_start, new_end))
+
+	def invert(self):
+		inverted = FragInfo(self.__size)
+		append   = inverted.__frags.append
+		prev_end = 0
+
+		for start, end in self.__frags:
+			if start > prev_end:
+				append((prev_end, start))
+			prev_end = end
+
+		if self.__size > prev_end:
+			append((prev_end, size))
+
+		return inverted
+
+	def free(self):
+		free     = 0
+		prev_end = 0
+
+		for start, end in self.__frags:
+			free += start - prev_end
+			prev_end = end
+
+		free += self.__size - prev_end
+
+		return free
+
 class Pak(object):
 	__slots__ = ('version', 'index_offset', 'index_size', 'footer_offset', 'index_sha1', 'mount_point', 'records')
 
@@ -194,7 +285,17 @@ class Pak(object):
 		for record in self:
 			if shall_unpack(files,record.filename):
 				record.unpack(stream,outdir,callback)
-	
+
+	def frag_info(self):
+		frags = FragInfo(self.footer_offset + 44)
+		frags.add(self.index_offset, self.index_offset + self.index_size)
+		frags.add(self.footer_offset, frags.size)
+
+		for record in self.records:
+			frags.add(record.offset, record.data_offset + record.compressed_size)
+
+		return frags
+
 	def print_list(self,details=False,human=False,delim="\n",sort_func=None,out=sys.stdout):
 		records = self.records
 
@@ -209,10 +310,6 @@ class Pak(object):
 
 			count = 0
 			sum_size = 0
-			out.write("Pak Version: %d%s" % (self.version, delim))
-			out.write("Index SHA1:  %s%s" % (hexlify(self.index_sha1).decode('latin1'), delim))
-			out.write("Mount Point: %s%s" % (self.mount_point, delim))
-			out.write(delim)
 			out.write("    Offset        Size  Compr-Method  Compr-Size  SHA1                                      Name%s" % delim)
 			for record in records:
 				size  = size_to_str(record.uncompressed_size)
@@ -230,9 +327,39 @@ class Pak(object):
 				count += 1
 				sum_size += record.uncompressed_size
 			out.write("%d file(s) (%s) %s" % (count, size_to_str(sum_size), delim))
+
+			out.write("%r\n" % self.frag_info().invert())
 		else:
 			for record in records:
 				out.write("%s%s" % (record.filename, delim))
+
+	def print_info(self,human=False,out=sys.stdout):
+		if human:
+			size_to_str = human_size
+		else:
+			size_to_str = str
+
+		csize = 0
+		size  = 0
+		for record in self.records:
+			csize += record.compressed_size
+			size  += record.uncompressed_size
+
+		frags = self.frag_info()
+
+		out.write("Pak Version: %d\n" % self.version)
+		out.write("Index SHA1:  %s\n" % hexlify(self.index_sha1).decode('latin1'))
+		out.write("Mount Point: %s\n" % self.mount_point)
+		out.write("File Count:  %d\n" % len(self.records))
+		out.write("Archive Size:            %10s\n" % size_to_str(frags.size))
+		out.write("Unallocated Bytes:       %10s\n" % size_to_str(frags.free()))
+		out.write("Sum Compr. Files Size:   %10s\n" % size_to_str(csize))
+		out.write("Sum Uncompr. Files Size: %10s\n" % size_to_str(size))
+		out.write("\n")
+		out.write("Fragments (%d):\n" % len(frags))
+
+		for start, end in frags:
+			out.write("\t%10s ... %10s (%10s)\n" % (start, end, size_to_str(end - start)))
 
 	def mount(self,stream,mountpt,foreground=False,debug=False):
 		mountpt = os.path.abspath(mountpt)
@@ -273,10 +400,10 @@ def metadata_diff(r1,r2):
 		v2 = getattr(r2,attr)
 		if v1 != v2:
 			diff.append('\t%s: %r != %r' % (attr, v1, v2))
-	
+
 	if r1.sha1 != r2.sha1:
 		diff.append('\tsha1: %s != %s' % (hexlify(r1.sha1).decode('latin1'), hexlify(r2.sha1).decode('latin1')))
-	
+
 	if r1.compression_blocks != r2.compression_blocks:
 		diff.append('\tcompression_blocks:\n\t\t%r\n\t\t\t!=\n\t\t%r' % (r1.compression_blocks, r2.compression_blocks))
 
@@ -305,7 +432,7 @@ class Record(namedtuple('RecordBase', [
 			sendfile(outfile, infile, self.data_offset, self.uncompressed_size)
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
-	
+
 	def read(self,data,offset,size):
 		if self.compression_method == COMPR_NONE:
 			uncompressed_size = self.uncompressed_size
@@ -318,7 +445,7 @@ class Record(namedtuple('RecordBase', [
 			return data[i:j]
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
-	
+
 	def unpack(self,stream,outdir=".",callback=lambda name: None):
 		prefix, name = os.path.split(self.filename)
 		prefix = os.path.join(outdir,prefix)
@@ -328,7 +455,6 @@ class Record(namedtuple('RecordBase', [
 		callback(name)
 		with open(name,"wb") as fp:
 			self.sendfile(fp,stream)
-		
 
 class RecordV1(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
@@ -384,7 +510,7 @@ def read_record_v2(stream, filename):
 def read_record_v3(stream, filename):
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
 		st_unpack('<QQQI20s',stream.read(48))
-	
+
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I',stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
@@ -400,7 +526,7 @@ def read_record_v3(stream, filename):
 def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
-	
+
 	if encrypted:
 		raise NotImplementedError("encryption is not implemented")
 
@@ -521,7 +647,7 @@ def read_index(stream,check_integrity=False):
 
 	if index_offset + index_size > footer_offset:
 		raise ValueError('illegal index offset/size')
-	
+
 	stream.seek(index_offset, 0)
 
 	mount_point = read_path(stream)
@@ -552,7 +678,7 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 
 	elif version == 3:
 		write_record = write_record_v3
-	
+
 	else:
 		raise ValueError('version not supported: %d' % version)
 
@@ -606,7 +732,7 @@ def shall_unpack(paths,name):
 def human_size(size):
 	if size < 2 ** 10:
 		return str(size)
-	
+
 	elif size < 2 ** 20:
 		size = "%.1f" % (size / 2 ** 10)
 		unit = "K"
@@ -638,10 +764,10 @@ def human_size(size):
 	else:
 		size = "%.1f" % (size / 2 ** 80)
 		unit = "Y"
-	
+
 	if size.endswith(".0"):
 		size = size[:-2]
-	
+
 	return size+unit
 
 SORT_ALIASES = {
@@ -864,7 +990,7 @@ if HAS_LLFUSE:
 
 				if name == 'user.u4pak.sha1':
 					return hexlify(entry.record.sha1)
-					
+
 				elif name == 'user.u4pak.compressed_size':
 					return str(entry.record.compressed_size).encode('ascii')
 
@@ -876,7 +1002,7 @@ if HAS_LLFUSE:
 
 				elif name == 'user.u4pak.encrypted':
 					return str(entry.record.encrypted).encode('ascii')
-				
+
 				else:
 					raise llfuse.FUSEError(llfuse.ENOATTR)
 
@@ -966,7 +1092,7 @@ if HAS_LLFUSE:
 				entry = self.inodes[fh]
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
-				
+
 			if type(entry) is Dir:
 				raise llfuse.FUSEError(errno.EISDIR)
 
@@ -1082,14 +1208,19 @@ def main(argv):
 
 	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
 	list_parser.set_defaults(command='list')
-	list_parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
-		help='print human readable file sizes')
+	add_human_arg(list_parser)
 	list_parser.add_argument('-d','--details',action='store_true',default=False,
 		help='print file offsets and sizes')
 	list_parser.add_argument('-s','--sort',dest='sort_func',metavar='KEYS',type=sort_func,default=None,
 		help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
 		     'Prepend "-" to a key name to sort in descending order.')
 	add_common_args(list_parser)
+
+	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
+	info_parser.set_defaults(command='info')
+	add_human_arg(info_parser)
+	add_integrity_arg(info_parser)
+	add_archive_arg(info_parser)
 
 	check_parser = subparsers.add_parser('check',aliases=('c',),help='check archive integrity')
 	check_parser.set_defaults(command='check')
@@ -1114,7 +1245,12 @@ def main(argv):
 		with open(args.archive,"rb") as stream:
 			pak = read_index(stream,args.check_integrity)
 			pak.print_list(args.details,args.human,delim,args.sort_func,sys.stdout)
-	
+
+	elif args.command == 'info':
+		with open(args.archive,"rb") as stream:
+			pak = read_index(stream,args.check_integrity)
+			pak.print_info(args.human,sys.stdout)
+
 	elif args.command == 'check':
 		state = {'error_count': 0}
 
@@ -1188,11 +1324,15 @@ def add_verbose_arg(parser):
 	parser.add_argument('-v','--verbose',action='store_true',default=False,
 		help='print verbose output')
 
+def add_human_arg(parser):
+	parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
+		help='print human readable file sizes')
+
 def add_common_args(parser):
-	add_archive_arg(parser)
 	add_print0_arg(parser)
 	add_verbose_arg(parser)
 	add_integrity_arg(parser)
+	add_archive_arg(parser)
 
 if __name__ == '__main__':
 	try:

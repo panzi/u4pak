@@ -327,8 +327,6 @@ class Pak(object):
 				count += 1
 				sum_size += record.uncompressed_size
 			out.write("%d file(s) (%s) %s" % (count, size_to_str(sum_size), delim))
-
-			out.write("%r\n" % self.frag_info().invert())
 		else:
 			for record in records:
 				out.write("%s%s" % (record.filename, delim))

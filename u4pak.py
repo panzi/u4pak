@@ -58,6 +58,11 @@ except NameError:
 	def cmp(a, b):
 		return (a > b) - (a < b)
 
+if hasattr(dict,'itervalues'):
+	itervalues = dict.itervalues
+else:
+	itervalues = dict.values
+
 # for Python < 3.3 and Windows
 def highlevel_sendfile(outfile,infile,offset,size):
 	infile.seek(offset,0)
@@ -454,14 +459,27 @@ class Record(namedtuple('RecordBase', [
 		with open(name,"wb") as fp:
 			self.sendfile(fp,stream)
 
+	@property
+	def data_offset(self):
+		return self.offset + self.header_size
+
+	@property
+	def alloc_size(self):
+		return self.header_size + self.compressed_size
+
+	@property
+	def index_size(self):
+		name_size = 4 + len(self.filename.replace(os.path.sep,'/').encode('utf-8')) + 1
+		return name_size + self.header_size
+
 class RecordV1(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 		                      compression_method, timestamp, sha1, None, False, None)
 
 	@property
-	def data_offset(self):
-		return self.offset + 56
+	def header_size(self):
+		return 56
 
 class RecordV2(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1):
@@ -469,8 +487,8 @@ class RecordV2(Record):
 		                      compression_method, None, sha1, None, False, None)
 
 	@property
-	def data_offset(self):
-		return self.offset + 48
+	def header_size(self):
+		return 48
 
 class RecordV3(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
@@ -480,11 +498,11 @@ class RecordV3(Record):
 		                      compression_block_size)
 
 	@property
-	def data_offset(self):
-		data_offset = self.offset + 53
+	def header_size(self):
+		size = 53
 		if self.compression_method != COMPR_NONE:
-			data_offset += len(self.compression_blocks) * 16
-		return data_offset
+			size += len(self.compression_blocks) * 16
+		return size
 
 def read_path(stream):
 	path_len, = st_unpack('<I',stream.read(4))
@@ -695,9 +713,12 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 	for filename in files:
 		callback(filename)
 		with open(filename,"rb") as fh:
-			record = write_record(stream,fh)
+			record = write_record(stream,fh,compression_method,encrypted,compression_block_size)
 			records.append((filename, record))
 
+	write_index(stream,version,mount_point,records)
+
+def write_index(stream,version,mount_point,records):
 	hasher = hashlib.sha1()
 	index_offset = stream.tell()
 
@@ -718,6 +739,218 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 
 	index_sha1 = hasher.digest()
 	stream.write(st_pack('<IIQQ20s', 0x5A6F12E1, version, index_offset, index_size, index_sha1))
+
+# TODO: untested!
+# removes, inserts and updates files, rewrites index, truncates archive if neccesarry
+def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
+         encrypted=False,compression_block_size=0,callback=lambda name: None):
+	if compression_method != COMPR_NONE:
+		raise NotImplementedError("compression is not implemented")
+
+	if encrypted:
+		raise NotImplementedError("encryption is not implemented")
+
+	pak = read_index(stream)
+
+	if pak.version == 1:
+		write_record = write_record_v1
+		def make_record(filename):
+			st   = os.stat(filename)
+			size = st.st_size
+			return RecordV1(filename, None, size, size, COMPR_NONE, int(st.st_mtime), None)
+
+	elif pak.version == 2:
+		write_record = write_record_v2
+		def make_record(filename):
+			size = os.path.getsize(filename)
+			return RecordV2(filename, None, size, size, COMPR_NONE, None)
+
+	elif pak.version == 3:
+		write_record = write_record_v3
+		def make_record(filename):
+			size = os.path.getsize(filename)
+			return RecordV3(filename, None, size, size, COMPR_NONE, None, None, False, 0)
+
+	else:
+		raise ValueError('version not supported: %d' % version)
+
+	# build directory tree of existing files
+	root = Dir(-1)
+	root.parent = root
+	for record in pak:
+		path = record.filename.split(os.path.sep)
+		path, name = path[:-1], path[-1]
+
+		parent = root
+		for i, comp in enumerate(path):
+			try:
+				entry = parent.children[comp]
+			except KeyError:
+				entry = parent.children[comp] = Dir(-1, parent=parent)
+
+			if type(entry) is not Dir:
+				raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
+
+			parent = entry
+
+		if name in parent.children:
+			raise ValueError("doubled name in archive: %s" % record.filename)
+
+		parent.children[name] = File(-1, record, parent)
+
+	# find files to remove
+	if remove:
+		for filename in remove:
+			path = filename.split(os.path.sep)
+			path, name = path[:-1], path[-1]
+
+			parent = root
+			for i, comp in enumerate(path):
+				try:
+					entry = parent.children[comp]
+				except KeyError:
+					entry = parent.children[comp] = Dir(-1, parent=parent)
+
+				if type(entry) is not Dir:
+					# TODO: maybe option to ignore this?
+					raise ValueError("file not in archive: %s" % filename)
+
+				parent = entry
+
+			if name not in parent.children:
+				raise ValueError("file not in archive: %s" % filename)
+
+			entry = parent.children[name]
+			del parent.children[name]
+
+	# find files to insert
+	if insert:
+		files = []
+		for name in insert:
+			if os.path.isdir(name):
+				for dirpath, dirnames, filenames in os.walk(name):
+					for filename in filenames:
+						files.append(os.path.join(dirpath,filename))
+			else:
+				files.append(name)
+
+		for filename in files:
+			path = filename.split(os.path.sep)
+			path, name = path[:-1], path[-1]
+
+			parent = root
+			for i, comp in enumerate(path):
+				try:
+					entry = parent.children[comp]
+				except KeyError:
+					entry = parent.children[comp] = Dir(-1, parent=parent)
+
+				if type(entry) is not Dir:
+					raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
+
+				parent = entry
+
+			if name in parent.children:
+				raise ValueError("doubled name in archive: %s" % filename)
+
+			parent.children[name] = File(-1, make_record(filename), parent)
+
+	# build new allocations
+	existing_records = []
+	new_records      = []
+
+	for record in root.allrecords():
+		if record.offset is None:
+			new_records.append(record)
+		else:
+			existing_records.append(record)
+
+	# try to build new allocations in a way that needs a minimal amount of reads/writes
+	allocations = []
+	new_records.sort(key=lambda r: (r.compressed_size, r.filename),reverse=True)
+	arch_size = 0
+	for record in existing_records:
+		size = record.alloc_size
+		offset = record.offset
+		if offset > arch_size:
+			# find new records that fit the hole in order to reduce shifts
+			# but never cause a shift torwards the end of the file
+			# this is done so the rewriting/shifting code below is simpler
+			i = 0
+			while i < len(new_records) and arch_size < offset:
+				new_record = new_records[i]
+				new_size = new_record.alloc_size
+				if arch_size + new_size <= offset:
+					allocations.append((arch_size, new_record))
+					del new_records[i]
+					arch_size += new_size
+				else:
+					i += 1
+
+		allocations.push((arch_size, record))
+		arch_size += size
+
+	# add remaining records at the end
+	new_records.sort(cmp=lambda r1, r2: strcoll(r1.filename, r2.filename))
+	for record in new_records:
+		allocations.append((arch_size,record))
+		arch_size += record.alloc_size
+
+	index_offset = arch_size
+	for offset, record in allocations:
+		arch_size += record.index_size
+
+	footer_offset = arch_size
+	arch_size += 44
+
+	current_size = os.fstat(stream.fileno()).st_size
+	diff_size = arch_size - current_size
+	# minimize chance of corrupting archive
+	if diff_size > 0 and hasattr(os,'statvfs'):
+		st = os.statvfs(stream.name)
+		free = st.f_frsize * st.f_bfree
+		if free - diff_size < DEFAULT_BUFFER_SIZE:
+			raise ValueError("filesystem not big enough")
+
+	index_records = []
+	for offset, record in reversed(allocations):
+		if record.offset is None:
+			# new record
+			filename = record.filename
+			callback("+"+filename)
+			with open(filename,"rb") as fh:
+				record_bytes = write_record(stream,fh,record.compression_method,record.encrypted,record.compression_block_size)
+		elif offset != record.offset:
+			assert offset > record.offset
+			callback(" "+filename)
+			fshift(stream,record.offset,offset,record.alloc_size)
+			stream.seek(offset, 0)
+			record_bytes = stream.read(record.header_size)
+		index_records.append((filename, record_bytes))
+
+	write_index(stream,version,mount_point,index_records)
+
+	if diff_size < 0:
+		stream.truncate(arch_size)
+
+def fshift(stream,src,dst,size):
+	assert src < dst
+	buf_size = DEFAULT_BUFFER_SIZE
+	buf      = bytearray(buf_size)
+
+	while size > 0:
+		if size >= buf_size:
+			stream.seek(src + size - buf_size, 0)
+			stream.readinto(buf)
+			data = buf
+			size -= buf_size
+		else:
+			stream.seek(src, 0)
+			data = stream.read(size)
+			size = 0
+
+		stream.seek(dst + size, 0)
+		stream.write(data)
 
 def shall_unpack(paths,name):
 	path = name.split(os.path.sep)
@@ -812,52 +1045,60 @@ def sort_func(sort):
 
 	return do_cmp
 
+class Entry(object):
+	__slots__ = 'inode','_parent','stat','__weakref__'
+
+	def __init__(self,inode,parent=None):
+		self.inode  = inode
+		self.parent = parent
+		self.stat   = None
+
+	@property
+	def parent(self):
+		return self._parent() if self._parent is not None else None
+
+	@parent.setter
+	def parent(self,parent):
+		self._parent = weakref.ref(parent) if parent is not None else None
+
+class Dir(Entry):
+	__slots__ = 'children',
+
+	def __init__(self,inode,children=None,parent=None):
+		Entry.__init__(self,inode,parent)
+		if children is None:
+			self.children = OrderedDict()
+		else:
+			self.children = children
+			for child in children.values():
+				child.parent = self
+
+	def __repr__(self):
+		return 'Dir(%r, %r)' % (self.inode, self.children)
+
+	def allrecords(self):
+		for child in itervalues(self.children):
+			if type(child) is Dir:
+				for record in child.allrecords():
+					yield record
+			else:
+				yield child.record
+
+class File(Entry):
+	__slots__ = 'record',
+
+	def __init__(self,inode,record,parent=None):
+		Entry.__init__(self,inode,parent)
+		self.record = record
+
+	def __repr__(self):
+		return 'File(%r, %r, %r)' % (self.inode, self.offset, self.size)
+
 if HAS_LLFUSE:
 	import errno
 	import weakref
 	import stat
 	import mmap
-
-	class Entry(object):
-		__slots__ = 'inode','_parent','stat','__weakref__'
-
-		def __init__(self,inode,parent=None):
-			self.inode  = inode
-			self.parent = parent
-			self.stat   = None
-
-		@property
-		def parent(self):
-			return self._parent() if self._parent is not None else None
-
-		@parent.setter
-		def parent(self,parent):
-			self._parent = weakref.ref(parent) if parent is not None else None
-
-	class Dir(Entry):
-		__slots__ = 'children',
-
-		def __init__(self,inode,children=None,parent=None):
-			Entry.__init__(self,inode,parent)
-			if children is None:
-				self.children = OrderedDict()
-			else:
-				self.children = children
-				for child in children.values():
-					child.parent = self
-
-		def __repr__(self):
-			return 'Dir(%r, %r)' % (self.inode, self.children)
-
-	class File(Entry):
-		__slots__ = 'record',
-
-		def __init__(self,inode,record,parent=None):
-			Entry.__init__(self,inode,parent)
-			self.record = record
-
-		def __repr__(self):
-			return 'File(%r, %r, %r)' % (self.inode, self.offset, self.size)
 
 	DIR_SELF   = '.'.encode(sys.getfilesystemencoding())
 	DIR_PARENT = '..'.encode(sys.getfilesystemencoding())

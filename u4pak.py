@@ -253,14 +253,14 @@ class Pak(object):
 					hasher.hexdigest(),
 					hexlify(sha1).decode('latin1')))
 
-		# check index sha1 sum
+		# test index sha1 sum
 		check_data("<archive index>", index_offset, self.index_size, self.index_sha1)
 
 		for r1 in self:
 			stream.seek(r1.offset, 0)
 			r2 = read_record(stream, r1.filename)
 
-			# check index metadata
+			# test index metadata
 			if r2.offset != 0:
 				callback(r2, 'data record offset field is no 0 but %d' % r2.offset)
 
@@ -277,7 +277,7 @@ class Pak(object):
 			if r1.data_offset + r1.compressed_size > index_offset:
 				callback('data bleeds into index')
 
-			# check file sha1 sum
+			# test file sha1 sum
 			# XXX: I don't know if the sha1 is of the comressed (and encrypted) data
 			#      or if it would need to uncompress (and decrypt) the data first.
 			check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
@@ -1461,8 +1461,8 @@ def main(argv):
 	add_integrity_arg(info_parser)
 	add_archive_arg(info_parser)
 
-	check_parser = subparsers.add_parser('check',aliases=('c',),help='check archive integrity')
-	check_parser.set_defaults(command='check')
+	check_parser = subparsers.add_parser('test',aliases=('t',),help='test archive integrity')
+	check_parser.set_defaults(command='test')
 	add_print0_arg(check_parser)
 	add_archive_arg(check_parser)
 
@@ -1490,7 +1490,7 @@ def main(argv):
 			pak = read_index(stream,args.check_integrity)
 			pak.print_info(args.human,sys.stdout)
 
-	elif args.command == 'check':
+	elif args.command == 'test':
 		state = {'error_count': 0}
 
 		def callback(ctx, message):
@@ -1549,7 +1549,7 @@ def main(argv):
 		raise ValueError('unknown command: %s' % args.command)
 
 def add_integrity_arg(parser):
-	parser.add_argument('-c','--check-integrity',action='store_true',default=False,
+	parser.add_argument('-t','--test-integrity',action='store_true',default=False,
 		help='perform extra integrity checks')
 
 def add_archive_arg(parser):

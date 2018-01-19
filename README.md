@@ -1,12 +1,12 @@
 u4pak
 =====
 
-Unpack, pack, list, check and mount Unreal Engine 4 .pak archives.
+Unpack, pack, list, test and mount Unreal Engine 4 .pak archives.
 
 Basic usage:
 
     u4pak.py list <archive>                 - list contens of .pak archive
-    u4pak.py check <archive>                - check archive integrity
+    u4pak.py test <archive>                 - test archive integrity
     u4pak.py unpack <archive>               - extract .pak archive
     u4pak.py pack <archive> <files>         - create .pak archive
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system

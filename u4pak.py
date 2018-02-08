@@ -530,7 +530,7 @@ def read_record_v3(stream, filename):
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I',stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0,block_count,2)]
+		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0, block_count * 2, 2)]
 	else:
 		blocks = None
 

@@ -27,6 +27,7 @@ import os
 import sys
 import hashlib
 import locale
+import zlib
 
 # for propper string sorting
 locale.setlocale(locale.LC_ALL, '')
@@ -433,6 +434,16 @@ class Record(namedtuple('RecordBase', [
 	def sendfile(self,outfile,infile):
 		if self.compression_method == COMPR_NONE:
 			sendfile(outfile, infile, self.data_offset, self.uncompressed_size)
+		elif self.compression_method == COMPR_ZLIB:
+			if self.encrypted:
+				raise NotImplementedError('zlib decompression with encryption is not implemented yet')
+			for block in self.compression_blocks:
+				block_offset = block[0]
+				block_size = block[1] - block[0]
+				infile.seek(block_offset)
+				block_content = infile.read(block_size)
+				block_decompress = zlib.decompress(block_content)
+				outfile.write(block_decompress)
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
 
@@ -530,7 +541,7 @@ def read_record_v3(stream, filename):
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I',stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0,block_count,2)]
+		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0, block_count * 2, 2)]
 	else:
 		blocks = None
 

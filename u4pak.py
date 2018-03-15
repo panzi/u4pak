@@ -670,7 +670,8 @@ def read_index(stream,check_integrity=False):
 		read_record = read_record_v3
 
 	else:
-		raise ValueError('unsupported version: %d' % version)
+		read_record = read_record_v3
+		#raise ValueError('unsupported version: %d' % version)
 
 	if index_offset + index_size > footer_offset:
 		raise ValueError('illegal index offset/size')

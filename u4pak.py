@@ -28,6 +28,7 @@ import sys
 import hashlib
 import locale
 import zlib
+import math
 
 # for propper string sorting
 locale.setlocale(locale.LC_ALL, '')
@@ -580,6 +581,69 @@ def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,com
 
 	return size, hasher.digest()
 
+def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=65536):
+	if encrypted:
+		raise NotImplementedError("encryption is not implemented")
+
+	buf_size = compression_block_size
+	block_count = int(math.ceil(size / compression_block_size))
+	base_offset = archive.tell()
+
+	archive.write(st_pack('<I',block_count))
+
+	# Seek Skip Offset
+	archive.seek(block_count * 8 * 2, 1)
+
+	record = st_pack('<BI',int(encrypted),compression_block_size)
+	archive.write(record)
+
+	cur_offset = base_offset + 4 + block_count * 8 * 2 + 5
+
+	compress_blocks = [0] * block_count * 2
+	compressed_size = 0
+	compress_block_no = 0
+
+	buf = bytearray(buf_size)
+	bytes_left = size
+	hasher = hashlib.sha1()
+	while bytes_left > 0:
+		if bytes_left >= buf_size:
+			n = fh.readinto(buf)
+			data = zlib.compress(buffer(buf))
+
+			compressed_size += len(data)
+			compress_blocks[compress_block_no * 2] = cur_offset
+			cur_offset += len(data)
+			compress_blocks[compress_block_no * 2 + 1] = cur_offset
+			compress_block_no += 1
+
+			if n < buf_size:
+				raise IOError('unexpected end of file')
+		else:
+			data = fh.read(bytes_left)
+			n = len(data)
+
+			data = zlib.compress(data)
+			compressed_size += len(data)
+			compress_blocks[compress_block_no * 2] = cur_offset
+			cur_offset += len(data)
+			compress_blocks[compress_block_no * 2 + 1] = cur_offset
+			compress_block_no += 1
+
+			if n < bytes_left:
+				raise IOError('unexpected end of file')
+		bytes_left -= n
+		hasher.update(data)
+		archive.write(data)
+
+	cur_offset = archive.tell()
+
+	archive.seek(base_offset + 4, 0)
+	archive.write(st_pack('<%dQ' % (block_count * 2), *compress_blocks))
+	archive.seek(cur_offset, 0)
+
+	return compressed_size, hasher.digest(), block_count, compress_blocks
+
 def write_record_v1(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if encrypted:
 		raise ValueError('version 1 does not support encryption')
@@ -630,17 +694,25 @@ def write_record_v2(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 	return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1)
 
 def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
-	if compression_method != COMPR_NONE:
+	if compression_method != COMPR_NONE and compression_method != COMPR_ZLIB:
 		raise NotImplementedError("compression is not implemented")
 
 	record_offset = archive.tell()
 
+	if compression_block_size == 0 and compression_method == COMPR_ZLIB:
+		compression_block_size = 65536
+
 	st = os.fstat(fh.fileno())
 	size = st.st_size
-	record = st_pack('<16xQI20xBI',size,compression_method,int(encrypted),compression_block_size)
+	record = st_pack('<16xQI20x',size,compression_method)
 	archive.write(record)
 
-	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
+	if compression_method == COMPR_ZLIB:
+		compressed_size, sha1,block_count, blocks = write_data_zlib(archive,fh,size,compression_method,encrypted,compression_block_size)
+	else:
+		record = st_pack('<BI',int(encrypted),compression_block_size)
+		archive.write(record)
+		compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
 	data_end = archive.tell()
 
 	archive.seek(record_offset+8, 0)
@@ -651,7 +723,10 @@ def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 
 	archive.seek(data_end, 0)
 
-	return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
+	if compression_method == COMPR_ZLIB:
+		return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1) + st_pack('<I%dQ' % (block_count * 2), block_count, *blocks) + st_pack('<BI',int(encrypted),compression_block_size)
+	else:
+		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
 def read_index(stream,check_integrity=False):
 	stream.seek(-44, 2)
@@ -698,7 +773,7 @@ def read_index(stream,check_integrity=False):
 	return pak
 
 def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
-         encrypted=False,compression_block_size=0,callback=lambda name: None):
+         encrypted=False,compression_block_size=0,callback=lambda name, files: None):
 	if version == 1:
 		write_record = write_record_v1
 
@@ -724,7 +799,7 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 
 	records = []
 	for filename in files:
-		callback(filename)
+		callback(filename, files)
 		with open(filename,"rb") as fh:
 			record = write_record(stream,fh,compression_method,encrypted,compression_block_size)
 			records.append((filename, record))
@@ -1443,7 +1518,7 @@ def main(argv):
 
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
 	parser.register('action', 'parsers', AliasedSubParsersAction)
-	parser.set_defaults(print0=False,verbose=False,check_integrity=False)
+	parser.set_defaults(print0=False,verbose=False,check_integrity=False,progress=False,zlib=False)
 
 	subparsers = parser.add_subparsers(metavar='command')
 
@@ -1451,6 +1526,8 @@ def main(argv):
 	unpack_parser.set_defaults(command='unpack')
 	unpack_parser.add_argument('-C','--dir',type=str,default='.',
 		help='directory to write unpacked files')
+	unpack_parser.add_argument('-p','--progress',action='store_true',default=False,
+		help='show progress')
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
@@ -1458,6 +1535,9 @@ def main(argv):
 	pack_parser.set_defaults(command='pack')
 	pack_parser.add_argument('--archive-version',type=int,choices=[1,2,3],default=3,help='archive file format version')
 	pack_parser.add_argument('--mount-point',type=str,default=os.path.join('..','..','..',''),help='archive mount point relative to its path')
+	pack_parser.add_argument('-z', '--zlib',action='store_true',default=False,help='use zlib compress')
+	pack_parser.add_argument('-p','--progress',action='store_true',default=False,
+		help='show progress')
 	add_print0_arg(pack_parser)
 	add_verbose_arg(pack_parser)
 	add_archive_arg(pack_parser)
@@ -1536,6 +1616,14 @@ def main(argv):
 	elif args.command == 'unpack':
 		if args.verbose:
 			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
+		elif args.progress:
+			global nDecompOffset
+			nDecompOffset = 0
+			def callback(name):
+				global nDecompOffset
+				nDecompOffset = nDecompOffset + 1
+				if nDecompOffset % 10 == 0:
+					print("Decompressing %3.02f%%" % (round(nDecompOffset/len(pak)*100,2)), end="\r")
 		else:
 			callback = lambda name: None
 
@@ -1549,11 +1637,21 @@ def main(argv):
 	elif args.command == 'pack':
 		if args.verbose:
 			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
+		elif args.progress:
+			global nCompOffset
+			nCompOffset = 0
+			def callback(name, files):
+				global nCompOffset
+				nCompOffset = nCompOffset + 1
+				print("Compressing %3.02f%%" % (round(nCompOffset/len(files)*100,2)), end="\r")
 		else:
-			callback = lambda name: None
+			callback = lambda name, files: None
+
+		compFmt = COMPR_NONE
+		if args.zlib == True: compFmt = COMPR_ZLIB
 
 		with open(args.archive,"wb") as stream:
-			pack(stream,args.files,args.mount_point,args.archive_version,callback=callback)
+			pack(stream,args.files,args.mount_point,args.archive_version,compFmt,callback=callback)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:

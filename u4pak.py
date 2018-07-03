@@ -26,14 +26,9 @@ from __future__ import with_statement, division, print_function
 import os
 import sys
 import hashlib
-import locale
 import zlib
 import math
 
-# for propper string sorting
-locale.setlocale(locale.LC_ALL, '')
-
-from locale import strcoll
 from struct import unpack as st_unpack, pack as st_pack
 from collections import OrderedDict, namedtuple
 from io import DEFAULT_BUFFER_SIZE
@@ -60,12 +55,6 @@ try:
 	buffer
 except NameError:
 	buffer = memoryview
-
-try:
-	cmp
-except NameError:
-	def cmp(a, b):
-		return (a > b) - (a < b)
 
 try:
 	itervalues = dict.itervalues
@@ -310,11 +299,11 @@ class Pak(object):
 
 		return frags
 
-	def print_list(self,details=False,human=False,delim="\n",sort_func=None,out=sys.stdout):
+	def print_list(self,details=False,human=False,delim="\n",sort_key_func=None,out=sys.stdout):
 		records = self.records
 
-		if sort_func:
-			records = sorted(records,cmp=sort_func)
+		if sort_key_func:
+			records = sorted(records,key=sort_key_func)
 
 		if details:
 			if human:
@@ -804,7 +793,7 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 		else:
 			files.append(name)
 
-	files.sort(cmp=strcoll)
+	files.sort()
 
 	records = []
 	for filename in files:
@@ -988,7 +977,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 		arch_size += size
 
 	# add remaining records at the end
-	new_records.sort(cmp=lambda r1, r2: strcoll(r1.filename, r2.filename))
+	new_records.sort(key=lambda r: r.filename)
 	for record in new_records:
 		allocations.append((arch_size,record))
 		arch_size += record.alloc_size
@@ -1105,42 +1094,33 @@ SORT_ALIASES = {
 	"Z": "-zsize",
 	"o": "offset",
 	"O": "-offset",
-	"n": "name",
-	"N": "-name"
+	"n": "name"
 }
 
-CMP_FUNCS = {
-	"size":  lambda lhs, rhs: cmp(lhs.uncompressed_size, rhs.uncompressed_size),
-	"-size": lambda lhs, rhs: cmp(rhs.uncompressed_size, lhs.uncompressed_size),
+KEY_FUNCS = {
+	"size":  lambda rec: rec.uncompressed_size,
+	"-size": lambda rec: -rec.uncompressed_size,
 
-	"zsize":  lambda lhs, rhs: cmp(lhs.compressed_size, rhs.compressed_size),
-	"-zsize": lambda lhs, rhs: cmp(rhs.compressed_size, lhs.compressed_size),
+	"zsize":  lambda rec: rec.compressed_size,
+	"-zsize": lambda rec: -rec.compressed_size,
 
-	"offset":  lambda lhs, rhs: cmp(lhs.offset, rhs.offset),
-	"-offset": lambda lhs, rhs: cmp(rhs.offset, lhs.offset),
+	"offset":  lambda rec: rec.offset,
+	"-offset": lambda rec: -rec.offset,
 
-	"name":  lambda lhs, rhs: strcoll(lhs.filename, rhs.filename),
-	"-name": lambda lhs, rhs: strcoll(rhs.filename, lhs.filename)
+	"name": lambda rec: rec.filename.lower(),
 }
 
-def sort_func(sort):
-	cmp_funcs = []
+def sort_key_func(sort):
+	key_funcs = []
 	for key in sort.split(","):
 		key = SORT_ALIASES.get(key,key)
 		try:
-			func = CMP_FUNCS[key]
+			func = KEY_FUNCS[key]
 		except KeyError:
 			raise ValueError("unknown sort key: "+key)
-		cmp_funcs.append(func)
+		key_funcs.append(func)
 
-	def do_cmp(lhs,rhs):
-		for cmp_func in cmp_funcs:
-			i = cmp_func(lhs,rhs)
-			if i != 0:
-				return i
-		return 0
-
-	return do_cmp
+	return lambda rec: tuple(key_func(rec) for key_func in key_funcs)
 
 class Entry(object):
 	__slots__ = 'inode','_parent','stat','__weakref__'
@@ -1557,9 +1537,9 @@ def main(argv):
 	add_human_arg(list_parser)
 	list_parser.add_argument('-d','--details',action='store_true',default=False,
 		help='print file offsets and sizes')
-	list_parser.add_argument('-s','--sort',dest='sort_func',metavar='KEYS',type=sort_func,default=None,
+	list_parser.add_argument('-s','--sort',dest='sort_key_func',metavar='KEYS',type=sort_key_func,default=None,
 		help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
-		     'Prepend "-" to a key name to sort in descending order.')
+		     'Prepend "-" to a key name to sort in descending order (descending order not supported for name).')
 	add_common_args(list_parser)
 
 	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
@@ -1590,7 +1570,7 @@ def main(argv):
 	if args.command == 'list':
 		with open(args.archive,"rb") as stream:
 			pak = read_index(stream,args.check_integrity)
-			pak.print_list(args.details,args.human,delim,args.sort_func,sys.stdout)
+			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
 		with open(args.archive,"rb") as stream:

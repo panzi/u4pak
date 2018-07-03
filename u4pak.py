@@ -57,14 +57,19 @@ except NameError:
 	xrange = range
 
 try:
+	buffer
+except NameError:
+	buffer = memoryview
+
+try:
 	cmp
 except NameError:
 	def cmp(a, b):
 		return (a > b) - (a < b)
 
-if hasattr(dict,'itervalues'):
+try:
 	itervalues = dict.itervalues
-else:
+except AttributeError:
 	itervalues = dict.values
 
 # for Python < 3.3 and Windows
@@ -185,7 +190,7 @@ class FragInfo(object):
 			prev_end = end
 
 		if self.__size > prev_end:
-			append((prev_end, size))
+			append((prev_end, self.__size))
 
 		return inverted
 
@@ -485,6 +490,10 @@ class Record(namedtuple('RecordBase', [
 	def index_size(self):
 		name_size = 4 + len(self.filename.replace(os.path.sep,'/').encode('utf-8')) + 1
 		return name_size + self.header_size
+
+	@property
+	def header_size(self):
+		raise NotImplementedError
 
 class RecordV1(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
@@ -860,7 +869,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 			return RecordV3(filename, None, size, size, COMPR_NONE, None, None, False, 0)
 
 	else:
-		raise ValueError('version not supported: %d' % version)
+		raise ValueError('version not supported: %d' % pak.version)
 
 	# build directory tree of existing files
 	root = Dir(-1)
@@ -975,7 +984,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 				else:
 					i += 1
 
-		allocations.push((arch_size, record))
+		allocations.append((arch_size, record))
 		arch_size += size
 
 	# add remaining records at the end
@@ -1016,7 +1025,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 			record_bytes = stream.read(record.header_size)
 		index_records.append((filename, record_bytes))
 
-	write_index(stream,version,mount_point,index_records)
+	write_index(stream,pak.version,mount_point,index_records)
 
 	if diff_size < 0:
 		stream.truncate(arch_size)
@@ -1180,7 +1189,7 @@ class File(Entry):
 		self.record = record
 
 	def __repr__(self):
-		return 'File(%r, %r, %r)' % (self.inode, self.offset, self.size)
+		return 'File(%r, %r)' % (self.inode, self.record)
 
 if HAS_LLFUSE:
 	import errno

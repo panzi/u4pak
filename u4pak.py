@@ -23,15 +23,16 @@
 
 from __future__ import with_statement, division, print_function
 
-import hashlib
-import math
 import os
 import sys
+import hashlib
 import zlib
-from binascii import hexlify
+import math
+
+from struct import unpack as st_unpack, pack as st_pack
 from collections import OrderedDict, namedtuple
 from io import DEFAULT_BUFFER_SIZE
-from struct import unpack as st_unpack, pack as st_pack
+from binascii import hexlify
 
 try:
 	import llfuse
@@ -60,10 +61,9 @@ try:
 except AttributeError:
 	itervalues = dict.values
 
-
 # for Python < 3.3 and Windows
-def highlevel_sendfile(outfile, infile, offset, size):
-	infile.seek(offset, 0)
+def highlevel_sendfile(outfile,infile,offset,size):
+	infile.seek(offset,0)
 	buf_size = DEFAULT_BUFFER_SIZE
 	buf = bytearray(buf_size)
 	while size > 0:
@@ -80,21 +80,19 @@ def highlevel_sendfile(outfile, infile, offset, size):
 			outfile.write(data)
 			size = 0
 
-
 if hasattr(os, 'sendfile'):
-	def sendfile(outfile, infile, offset, size):
+	def sendfile(outfile,infile,offset,size):
 		try:
 			out_fd = outfile.fileno()
-			in_fd = infile.fileno()
+			in_fd  = infile.fileno()
 		except:
-			highlevel_sendfile(outfile, infile, offset, size)
+			highlevel_sendfile(outfile,infile,offset,size)
 		else:
 			# size == 0 has special meaning for some sendfile implentations
 			if size > 0:
 				os.sendfile(out_fd, in_fd, offset, size)
 else:
 	sendfile = highlevel_sendfile
-
 
 def raise_check_error(ctx, message):
 	if ctx is None:
@@ -106,12 +104,11 @@ def raise_check_error(ctx, message):
 	else:
 		raise ValueError("%s: %s" % (ctx, message))
 
-
 class FragInfo(object):
-	__slots__ = ('__frags', '__size')
+	__slots__ = ('__frags','__size')
 
-	def __init__(self, size, frags=None):
-		self.__size = size
+	def __init__(self,size,frags=None):
+		self.__size  = size
 		self.__frags = []
 		if frags:
 			for start, end in frags:
@@ -130,7 +127,7 @@ class FragInfo(object):
 	def __repr__(self):
 		return 'FragInfo(%r,%r)' % (self.__size, self.__frags)
 
-	def add(self, new_start, new_end):
+	def add(self,new_start,new_end):
 		if new_start >= new_end:
 			return
 
@@ -154,7 +151,7 @@ class FragInfo(object):
 			else:
 				continue
 
-			j = i + 1
+			j = i+1
 			n = len(frags)
 			while j < n:
 				next_start, next_end = frags[j]
@@ -173,7 +170,7 @@ class FragInfo(object):
 
 	def invert(self):
 		inverted = FragInfo(self.__size)
-		append = inverted.__frags.append
+		append   = inverted.__frags.append
 		prev_end = 0
 
 		for start, end in self.__frags:
@@ -187,7 +184,7 @@ class FragInfo(object):
 		return inverted
 
 	def free(self):
-		free = 0
+		free     = 0
 		prev_end = 0
 
 		for start, end in self.__frags:
@@ -198,18 +195,17 @@ class FragInfo(object):
 
 		return free
 
-
 class Pak(object):
 	__slots__ = ('version', 'index_offset', 'index_size', 'footer_offset', 'index_sha1', 'mount_point', 'records')
 
-	def __init__(self, version, index_offset, index_size, footer_offset, index_sha1, mount_point=None, records=None):
-		self.version = version
-		self.index_offset = index_offset
-		self.index_size = index_size
+	def __init__(self,version,index_offset,index_size,footer_offset,index_sha1,mount_point=None,records=None):
+		self.version       = version
+		self.index_offset  = index_offset
+		self.index_size    = index_size
 		self.footer_offset = footer_offset
-		self.index_sha1 = index_sha1
-		self.mount_point = mount_point
-		self.records = records or []
+		self.index_sha1    = index_sha1
+		self.mount_point   = mount_point
+		self.records       = records or []
 
 	def __len__(self):
 		return len(self.records)
@@ -219,10 +215,9 @@ class Pak(object):
 
 	def __repr__(self):
 		return 'Pak(version=%r, index_offset=%r, index_size=%r, footer_offset=%r, index_sha1=%r, mount_point=%r, records=%r)' % (
-			self.version, self.index_offset, self.index_size, self.footer_offset, self.index_sha1, self.mount_point,
-			self.records)
+			self.version, self.index_offset, self.index_size, self.footer_offset, self.index_sha1, self.mount_point, self.records)
 
-	def check_integrity(self, stream, callback=raise_check_error):
+	def check_integrity(self,stream,callback=raise_check_error):
 		index_offset = self.index_offset
 		buf = bytearray(DEFAULT_BUFFER_SIZE)
 
@@ -288,14 +283,14 @@ class Pak(object):
 			#      or if it would need to uncompress (and decrypt) the data first.
 			check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
 
-	def unpack(self, stream, outdir=".", callback=lambda name: None):
+	def unpack(self,stream,outdir=".",callback=lambda name: None):
 		for record in self:
-			record.unpack(stream, outdir, callback)
+			record.unpack(stream,outdir,callback)
 
-	def unpack_only(self, stream, files, outdir=".", callback=lambda name: None):
+	def unpack_only(self,stream,files,outdir=".",callback=lambda name: None):
 		for record in self:
-			if shall_unpack(files, record.filename):
-				record.unpack(stream, outdir, callback)
+			if shall_unpack(files,record.filename):
+				record.unpack(stream,outdir,callback)
 
 	def frag_info(self):
 		frags = FragInfo(self.footer_offset + 44)
@@ -307,11 +302,11 @@ class Pak(object):
 
 		return frags
 
-	def print_list(self, details=False, human=False, delim="\n", sort_key_func=None, out=sys.stdout):
+	def print_list(self,details=False,human=False,delim="\n",sort_key_func=None,out=sys.stdout):
 		records = self.records
 
 		if sort_key_func:
-			records = sorted(records, key=sort_key_func)
+			records = sorted(records,key=sort_key_func)
 
 		if details:
 			if human:
@@ -321,11 +316,10 @@ class Pak(object):
 
 			count = 0
 			sum_size = 0
-			out.write(
-				"    Offset        Size  Compr-Method  Compr-Size  SHA1                                      Name%s" % delim)
+			out.write("    Offset        Size  Compr-Method  Compr-Size  SHA1                                      Name%s" % delim)
 			for record in records:
-				size = size_to_str(record.uncompressed_size)
-				sha1 = hexlify(record.sha1).decode('latin1')
+				size  = size_to_str(record.uncompressed_size)
+				sha1  = hexlify(record.sha1).decode('latin1')
 				cmeth = record.compression_method
 
 				if cmeth == COMPR_NONE:
@@ -343,17 +337,17 @@ class Pak(object):
 			for record in records:
 				out.write("%s%s" % (record.filename, delim))
 
-	def print_info(self, human=False, out=sys.stdout):
+	def print_info(self,human=False,out=sys.stdout):
 		if human:
 			size_to_str = human_size
 		else:
 			size_to_str = str
 
 		csize = 0
-		size = 0
+		size  = 0
 		for record in self.records:
 			csize += record.compressed_size
-			size += record.uncompressed_size
+			size  += record.uncompressed_size
 
 		frags = self.frag_info()
 
@@ -371,10 +365,10 @@ class Pak(object):
 		for start, end in frags:
 			out.write("\t%10s ... %10s (%10s)\n" % (start, end, size_to_str(end - start)))
 
-	def mount(self, stream, mountpt, foreground=False, debug=False):
+	def mount(self,stream,mountpt,foreground=False,debug=False):
 		mountpt = os.path.abspath(mountpt)
-		ops = Operations(stream, self)
-		args = ['fsname=u4pak', 'subtype=u4pak', 'ro']
+		ops     = Operations(stream,self)
+		args    = ['fsname=u4pak', 'subtype=u4pak', 'ro']
 
 		if debug:
 			foreground = True
@@ -389,27 +383,25 @@ class Pak(object):
 		finally:
 			llfuse.close()
 
-
 # compare all metadata except for the filename
-def same_metadata(r1, r2):
+def same_metadata(r1,r2):
 	# data records always have offset == 0 it seems, so skip that
 	return \
-		r1.compressed_size == r2.compressed_size and \
-		r1.uncompressed_size == r2.uncompressed_size and \
-		r1.compression_method == r2.compression_method and \
-		r1.timestamp == r2.timestamp and \
-		r1.sha1 == r2.sha1 and \
-		r1.compression_blocks == r2.compression_blocks and \
-		r1.encrypted == r2.encrypted and \
+		r1.compressed_size        == r2.compressed_size    and \
+		r1.uncompressed_size      == r2.uncompressed_size  and \
+		r1.compression_method     == r2.compression_method and \
+		r1.timestamp              == r2.timestamp          and \
+		r1.sha1                   == r2.sha1               and \
+		r1.compression_blocks     == r2.compression_blocks and \
+		r1.encrypted              == r2.encrypted          and \
 		r1.compression_block_size == r2.compression_block_size
 
-
-def metadata_diff(r1, r2):
+def metadata_diff(r1,r2):
 	diff = []
 
 	for attr in ['compressed_size', 'uncompressed_size', 'timestamp', 'encrypted', 'compression_block_size']:
-		v1 = getattr(r1, attr)
-		v2 = getattr(r2, attr)
+		v1 = getattr(r1,attr)
+		v2 = getattr(r2,attr)
 		if v1 != v2:
 			diff.append('\t%s: %r != %r' % (attr, v1, v2))
 
@@ -421,11 +413,10 @@ def metadata_diff(r1, r2):
 
 	return '\n'.join(diff)
 
-
-COMPR_NONE = 0x00
-COMPR_ZLIB = 0x01
+COMPR_NONE        = 0x00
+COMPR_ZLIB        = 0x01
 COMPR_BIAS_MEMORY = 0x10
-COMPR_BIAS_SPEED = 0x20
+COMPR_BIAS_SPEED  = 0x20
 
 COMPR_METHODS = {COMPR_NONE, COMPR_ZLIB, COMPR_BIAS_MEMORY, COMPR_BIAS_SPEED}
 
@@ -433,15 +424,14 @@ COMPR_METHOD_NAMES = {
 	COMPR_NONE: 'none',
 	COMPR_ZLIB: 'zlib',
 	COMPR_BIAS_MEMORY: 'bias memory',
-	COMPR_BIAS_SPEED: 'bias speed'
+	COMPR_BIAS_SPEED:  'bias speed'
 }
-
 
 class Record(namedtuple('RecordBase', [
 	'filename', 'offset', 'compressed_size', 'uncompressed_size', 'compression_method',
 	'timestamp', 'sha1', 'compression_blocks', 'encrypted', 'compression_block_size'])):
 
-	def sendfile(self, outfile, infile):
+	def sendfile(self,outfile,infile):
 		if self.compression_method == COMPR_NONE:
 			sendfile(outfile, infile, self.data_offset, self.uncompressed_size)
 		elif self.compression_method == COMPR_ZLIB:
@@ -457,7 +447,7 @@ class Record(namedtuple('RecordBase', [
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
 
-	def read(self, data, offset, size):
+	def read(self,data,offset,size):
 		if self.compression_method == COMPR_NONE:
 			uncompressed_size = self.uncompressed_size
 
@@ -470,15 +460,15 @@ class Record(namedtuple('RecordBase', [
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
 
-	def unpack(self, stream, outdir=".", callback=lambda name: None):
+	def unpack(self,stream,outdir=".",callback=lambda name: None):
 		prefix, name = os.path.split(self.filename)
-		prefix = os.path.join(outdir, prefix)
+		prefix = os.path.join(outdir,prefix)
 		if not os.path.exists(prefix):
 			os.makedirs(prefix)
-		name = os.path.join(prefix, name)
+		name = os.path.join(prefix,name)
 		callback(name)
-		with open(name, "wb") as fp:
-			self.sendfile(fp, stream)
+		with open(name,"wb") as fp:
+			self.sendfile(fp,stream)
 
 	@property
 	def data_offset(self):
@@ -490,13 +480,12 @@ class Record(namedtuple('RecordBase', [
 
 	@property
 	def index_size(self):
-		name_size = 4 + len(self.filename.replace(os.path.sep, '/').encode('utf-8')) + 1
+		name_size = 4 + len(self.filename.replace(os.path.sep,'/').encode('utf-8')) + 1
 		return name_size + self.header_size
 
 	@property
 	def header_size(self):
 		raise NotImplementedError
-
 
 class RecordV1(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
@@ -507,7 +496,6 @@ class RecordV1(Record):
 	def header_size(self):
 		return 56
 
-
 class RecordV2(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
@@ -516,7 +504,6 @@ class RecordV2(Record):
 	@property
 	def header_size(self):
 		return 48
-
 
 class RecordV3(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
@@ -532,7 +519,6 @@ class RecordV3(Record):
 			size += len(self.compression_blocks) * 16
 		return size
 
-
 class RecordV4(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
 				compression_blocks, encrypted, compression_block_size):
@@ -547,47 +533,40 @@ class RecordV4(Record):
 			size += len(self.compression_blocks) * 16
 		return size
 
-
 def read_path(stream):
-	path_len, = st_unpack('<I', stream.read(4))
-	return stream.read(path_len).rstrip(b'\0').decode('utf-8').replace('/', os.path.sep)
-
+	path_len, = st_unpack('<I',stream.read(4))
+	return stream.read(path_len).rstrip(b'\0').decode('utf-8').replace('/',os.path.sep)
 
 def pack_path(path):
-	path = path.replace(os.path.sep, '/').encode('utf-8') + b'\0'
+	path = path.replace(os.path.sep,'/').encode('utf-8') + b'\0'
 	return st_pack('<I', len(path)) + path
 
-
-def write_path(stream, path):
+def write_path(stream,path):
 	data = pack_path(path)
 	stream.write(data)
 	return data
 
-
 def read_record_v1(stream, filename):
-	return RecordV1(filename, *st_unpack('<QQQIQ20s', stream.read(56)))
-
+	return RecordV1(filename, *st_unpack('<QQQIQ20s',stream.read(56)))
 
 def read_record_v2(stream, filename):
-	return RecordV2(filename, *st_unpack('<QQQI20s', stream.read(48)))
-
+	return RecordV2(filename, *st_unpack('<QQQI20s',stream.read(48)))
 
 def read_record_v3(stream, filename):
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
-		st_unpack('<QQQI20s', stream.read(48))
+		st_unpack('<QQQI20s',stream.read(48))
 
 	if compression_method != COMPR_NONE:
-		block_count, = st_unpack('<I', stream.read(4))
+		block_count, = st_unpack('<I',stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i + 1]) for i in xrange(0, block_count * 2, 2)]
+		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
-	encrypted, compression_block_size = st_unpack('<BI', stream.read(5))
+	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
-
 
 def read_record_v4(stream, filename):
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
@@ -606,8 +585,7 @@ def read_record_v4(stream, filename):
 	return RecordV4(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
 
-
-def write_data(archive, fh, size, compression_method=COMPR_NONE, encrypted=False, compression_block_size=0):
+def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
@@ -635,8 +613,7 @@ def write_data(archive, fh, size, compression_method=COMPR_NONE, encrypted=False
 
 	return size, hasher.digest()
 
-
-def write_data_zlib(archive, fh, size, compression_method=COMPR_NONE, encrypted=False, compression_block_size=65536):
+def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=65536):
 	if encrypted:
 		raise NotImplementedError("encryption is not implemented")
 
@@ -644,12 +621,12 @@ def write_data_zlib(archive, fh, size, compression_method=COMPR_NONE, encrypted=
 	block_count = int(math.ceil(size / compression_block_size))
 	base_offset = archive.tell()
 
-	archive.write(st_pack('<I', block_count))
+	archive.write(st_pack('<I',block_count))
 
 	# Seek Skip Offset
 	archive.seek(block_count * 8 * 2, 1)
 
-	record = st_pack('<BI', int(encrypted), compression_block_size)
+	record = st_pack('<BI',int(encrypted),compression_block_size)
 	archive.write(record)
 
 	cur_offset = base_offset + 4 + block_count * 8 * 2 + 5
@@ -699,8 +676,7 @@ def write_data_zlib(archive, fh, size, compression_method=COMPR_NONE, encrypted=
 
 	return compressed_size, hasher.digest(), block_count, compress_blocks
 
-
-def write_record_v1(archive, fh, compression_method=COMPR_NONE, encrypted=False, compression_block_size=0):
+def write_record_v1(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if encrypted:
 		raise ValueError('version 1 does not support encryption')
 
@@ -709,24 +685,23 @@ def write_record_v1(archive, fh, compression_method=COMPR_NONE, encrypted=False,
 	st = os.fstat(fh.fileno())
 	size = st.st_size
 	# XXX: timestamp probably needs multiplication with some factor?
-	record = st_pack('<16xQIQ20x', size, compression_method, int(st.st_mtime))
+	record = st_pack('<16xQIQ20x',size,compression_method,int(st.st_mtime))
 	archive.write(record)
 
-	compressed_size, sha1 = write_data(archive, fh, size, compression_method, encrypted, compression_block_size)
+	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
 	data_end = archive.tell()
 
-	archive.seek(record_offset + 8, 0)
-	archive.write(st_pack('<Q', compressed_size))
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
 
-	archive.seek(record_offset + 36, 0)
+	archive.seek(record_offset+36, 0)
 	archive.write(sha1)
 
 	archive.seek(data_end, 0)
 
-	return st_pack('<QQQIQ20s', record_offset, compressed_size, size, compression_method, int(st.st_mtime), sha1)
+	return st_pack('<QQQIQ20s',record_offset,compressed_size,size,compression_method,int(st.st_mtime),sha1)
 
-
-def write_record_v2(archive, fh, compression_method=COMPR_NONE, encrypted=False, compression_block_size=0):
+def write_record_v2(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if encrypted:
 		raise ValueError('version 2 does not support encryption')
 
@@ -734,24 +709,23 @@ def write_record_v2(archive, fh, compression_method=COMPR_NONE, encrypted=False,
 
 	st = os.fstat(fh.fileno())
 	size = st.st_size
-	record = st_pack('<16xQI20x', size, compression_method)
+	record = st_pack('<16xQI20x',size,compression_method)
 	archive.write(record)
 
-	compressed_size, sha1 = write_data(archive, fh, size, compression_method, encrypted, compression_block_size)
+	compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
 	data_end = archive.tell()
 
-	archive.seek(record_offset + 8, 0)
-	archive.write(st_pack('<Q', compressed_size))
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
 
-	archive.seek(record_offset + 28, 0)
+	archive.seek(record_offset+28, 0)
 	archive.write(sha1)
 
 	archive.seek(data_end, 0)
 
-	return st_pack('<QQQI20s', record_offset, compressed_size, size, compression_method, sha1)
+	return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1)
 
-
-def write_record_v3(archive, fh, compression_method=COMPR_NONE, encrypted=False, compression_block_size=0):
+def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if compression_method != COMPR_NONE and compression_method != COMPR_ZLIB:
 		raise NotImplementedError("compression is not implemented")
 
@@ -762,41 +736,35 @@ def write_record_v3(archive, fh, compression_method=COMPR_NONE, encrypted=False,
 
 	st = os.fstat(fh.fileno())
 	size = st.st_size
-	record = st_pack('<16xQI20x', size, compression_method)
+	record = st_pack('<16xQI20x',size,compression_method)
 	archive.write(record)
 
 	if compression_method == COMPR_ZLIB:
-		compressed_size, sha1, block_count, blocks = write_data_zlib(archive, fh, size, compression_method, encrypted,
-																	 compression_block_size)
+		compressed_size, sha1,block_count, blocks = write_data_zlib(archive,fh,size,compression_method,encrypted,compression_block_size)
 	else:
-		record = st_pack('<BI', int(encrypted), compression_block_size)
+		record = st_pack('<BI',int(encrypted),compression_block_size)
 		archive.write(record)
-		compressed_size, sha1 = write_data(archive, fh, size, compression_method, encrypted, compression_block_size)
+		compressed_size, sha1 = write_data(archive,fh,size,compression_method,encrypted,compression_block_size)
 	data_end = archive.tell()
 
-	archive.seek(record_offset + 8, 0)
-	archive.write(st_pack('<Q', compressed_size))
+	archive.seek(record_offset+8, 0)
+	archive.write(st_pack('<Q',compressed_size))
 
-	archive.seek(record_offset + 28, 0)
+	archive.seek(record_offset+28, 0)
 	archive.write(sha1)
 
 	archive.seek(data_end, 0)
 
 	if compression_method == COMPR_ZLIB:
-		return st_pack('<QQQI20s', record_offset, compressed_size, size, compression_method, sha1) + st_pack(
-			'<I%dQ' % (block_count * 2), block_count,
-			*blocks) + st_pack('<BI', int(encrypted),
-							   compression_block_size)
+		return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1) + st_pack('<I%dQ' % (block_count * 2), block_count, *blocks) + st_pack('<BI',int(encrypted),compression_block_size)
 	else:
-		return st_pack('<QQQI20sBI', record_offset, compressed_size, size, compression_method, sha1, int(encrypted),
-					   compression_block_size)
+		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
-
-def read_index(stream, check_integrity=False):
+def read_index(stream,check_integrity=False):
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
-	magic, version, index_offset, index_size, index_sha1 = st_unpack('<IIQQ20s', footer)
+	magic, version, index_offset, index_size, index_sha1 = st_unpack('<IIQQ20s',footer)
 
 	if magic != 0x5A6F12E1:
 		raise ValueError('illegal file magic: 0x%08x' % magic)
@@ -822,13 +790,13 @@ def read_index(stream, check_integrity=False):
 	stream.seek(index_offset, 0)
 
 	mount_point = read_path(stream)
-	entry_count = st_unpack('<I', stream.read(4))[0]
+	entry_count = st_unpack('<I',stream.read(4))[0]
 
 	pak = Pak(version, index_offset, index_size, footer_offset, index_sha1, mount_point)
 
 	for i in xrange(entry_count):
 		filename = read_path(stream)
-		record = read_record(stream, filename)
+		record   = read_record(stream, filename)
 		pak.records.append(record)
 
 	if stream.tell() > footer_offset:
@@ -839,9 +807,8 @@ def read_index(stream, check_integrity=False):
 
 	return pak
 
-
-def pack(stream, files_or_dirs, mount_point, version=3, compression_method=COMPR_NONE,
-		 encrypted=False, compression_block_size=0, callback=lambda name, files: None):
+def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
+		 encrypted=False,compression_block_size=0,callback=lambda name, files: None):
 	if version == 1:
 		write_record = write_record_v1
 
@@ -859,7 +826,7 @@ def pack(stream, files_or_dirs, mount_point, version=3, compression_method=COMPR
 		if os.path.isdir(name):
 			for dirpath, dirnames, filenames in os.walk(name):
 				for filename in filenames:
-					files.append(os.path.join(dirpath, filename))
+					files.append(os.path.join(dirpath,filename))
 		else:
 			files.append(name)
 
@@ -868,19 +835,18 @@ def pack(stream, files_or_dirs, mount_point, version=3, compression_method=COMPR
 	records = []
 	for filename in files:
 		callback(filename, files)
-		with open(filename, "rb") as fh:
-			record = write_record(stream, fh, compression_method, encrypted, compression_block_size)
+		with open(filename,"rb") as fh:
+			record = write_record(stream,fh,compression_method,encrypted,compression_block_size)
 			records.append((filename, record))
 
-	write_index(stream, version, mount_point, records)
+	write_index(stream,version,mount_point,records)
 
-
-def write_index(stream, version, mount_point, records):
+def write_index(stream,version,mount_point,records):
 	hasher = hashlib.sha1()
 	index_offset = stream.tell()
 
-	index_header = pack_path(mount_point) + st_pack('<I', len(records))
-	index_size = len(index_header)
+	index_header = pack_path(mount_point) + st_pack('<I',len(records))
+	index_size   = len(index_header)
 	hasher.update(index_header)
 	stream.write(index_header)
 
@@ -897,11 +863,10 @@ def write_index(stream, version, mount_point, records):
 	index_sha1 = hasher.digest()
 	stream.write(st_pack('<IIQQ20s', 0x5A6F12E1, version, index_offset, index_size, index_sha1))
 
-
 # TODO: untested!
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
-def update(stream, mount_point, insert=None, remove=None, compression_method=COMPR_NONE,
-		   encrypted=False, compression_block_size=0, callback=lambda name: None):
+def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
+		   encrypted=False,compression_block_size=0,callback=lambda name: None):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
@@ -912,22 +877,19 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 
 	if pak.version == 1:
 		write_record = write_record_v1
-
 		def make_record(filename):
-			st = os.stat(filename)
+			st   = os.stat(filename)
 			size = st.st_size
 			return RecordV1(filename, None, size, size, COMPR_NONE, int(st.st_mtime), None)
 
 	elif pak.version == 2:
 		write_record = write_record_v2
-
 		def make_record(filename):
 			size = os.path.getsize(filename)
 			return RecordV2(filename, None, size, size, COMPR_NONE, None)
 
 	elif pak.version == 3:
 		write_record = write_record_v3
-
 		def make_record(filename):
 			size = os.path.getsize(filename)
 			return RecordV3(filename, None, size, size, COMPR_NONE, None, None, False, 0)
@@ -950,7 +912,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 				entry = parent.children[comp] = Dir(-1, parent=parent)
 
 			if type(entry) is not Dir:
-				raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i + 1]))
+				raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 			parent = entry
 
@@ -991,7 +953,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 			if os.path.isdir(name):
 				for dirpath, dirnames, filenames in os.walk(name):
 					for filename in filenames:
-						files.append(os.path.join(dirpath, filename))
+						files.append(os.path.join(dirpath,filename))
 			else:
 				files.append(name)
 
@@ -1007,7 +969,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 					entry = parent.children[comp] = Dir(-1, parent=parent)
 
 				if type(entry) is not Dir:
-					raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i + 1]))
+					raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 				parent = entry
 
@@ -1018,7 +980,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 
 	# build new allocations
 	existing_records = []
-	new_records = []
+	new_records      = []
 
 	for record in root.allrecords():
 		if record.offset is None:
@@ -1028,7 +990,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 
 	# try to build new allocations in a way that needs a minimal amount of reads/writes
 	allocations = []
-	new_records.sort(key=lambda r: (r.compressed_size, r.filename), reverse=True)
+	new_records.sort(key=lambda r: (r.compressed_size, r.filename),reverse=True)
 	arch_size = 0
 	for record in existing_records:
 		size = record.alloc_size
@@ -1054,7 +1016,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 	# add remaining records at the end
 	new_records.sort(key=lambda r: r.filename)
 	for record in new_records:
-		allocations.append((arch_size, record))
+		allocations.append((arch_size,record))
 		arch_size += record.alloc_size
 
 	index_offset = arch_size
@@ -1067,7 +1029,7 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 	current_size = os.fstat(stream.fileno()).st_size
 	diff_size = arch_size - current_size
 	# minimize chance of corrupting archive
-	if diff_size > 0 and hasattr(os, 'statvfs'):
+	if diff_size > 0 and hasattr(os,'statvfs'):
 		st = os.statvfs(stream.name)
 		free = st.f_frsize * st.f_bfree
 		if free - diff_size < DEFAULT_BUFFER_SIZE:
@@ -1078,28 +1040,26 @@ def update(stream, mount_point, insert=None, remove=None, compression_method=COM
 		if record.offset is None:
 			# new record
 			filename = record.filename
-			callback("+" + filename)
-			with open(filename, "rb") as fh:
-				record_bytes = write_record(stream, fh, record.compression_method, record.encrypted,
-											record.compression_block_size)
+			callback("+"+filename)
+			with open(filename,"rb") as fh:
+				record_bytes = write_record(stream,fh,record.compression_method,record.encrypted,record.compression_block_size)
 		elif offset != record.offset:
 			assert offset > record.offset
-			callback(" " + filename)
-			fshift(stream, record.offset, offset, record.alloc_size)
+			callback(" "+filename)
+			fshift(stream,record.offset,offset,record.alloc_size)
 			stream.seek(offset, 0)
 			record_bytes = stream.read(record.header_size)
 		index_records.append((filename, record_bytes))
 
-	write_index(stream, pak.version, mount_point, index_records)
+	write_index(stream,pak.version,mount_point,index_records)
 
 	if diff_size < 0:
 		stream.truncate(arch_size)
 
-
-def fshift(stream, src, dst, size):
+def fshift(stream,src,dst,size):
 	assert src < dst
 	buf_size = DEFAULT_BUFFER_SIZE
-	buf = bytearray(buf_size)
+	buf      = bytearray(buf_size)
 
 	while size > 0:
 		if size >= buf_size:
@@ -1115,15 +1075,13 @@ def fshift(stream, src, dst, size):
 		stream.seek(dst + size, 0)
 		stream.write(data)
 
-
-def shall_unpack(paths, name):
+def shall_unpack(paths,name):
 	path = name.split(os.path.sep)
-	for i in range(1, len(path) + 1):
+	for i in range(1,len(path)+1):
 		prefix = os.path.join(*path[0:i])
 		if prefix in paths:
 			return True
 	return False
-
 
 def human_size(size):
 	if size < 2 ** 10:
@@ -1164,8 +1122,7 @@ def human_size(size):
 	if size.endswith(".0"):
 		size = size[:-2]
 
-	return size + unit
-
+	return size+unit
 
 SORT_ALIASES = {
 	"s": "size",
@@ -1178,54 +1135,51 @@ SORT_ALIASES = {
 }
 
 KEY_FUNCS = {
-	"size": lambda rec: rec.uncompressed_size,
+	"size":  lambda rec: rec.uncompressed_size,
 	"-size": lambda rec: -rec.uncompressed_size,
 
-	"zsize": lambda rec: rec.compressed_size,
+	"zsize":  lambda rec: rec.compressed_size,
 	"-zsize": lambda rec: -rec.compressed_size,
 
-	"offset": lambda rec: rec.offset,
+	"offset":  lambda rec: rec.offset,
 	"-offset": lambda rec: -rec.offset,
 
 	"name": lambda rec: rec.filename.lower(),
 }
 
-
 def sort_key_func(sort):
 	key_funcs = []
 	for key in sort.split(","):
-		key = SORT_ALIASES.get(key, key)
+		key = SORT_ALIASES.get(key,key)
 		try:
 			func = KEY_FUNCS[key]
 		except KeyError:
-			raise ValueError("unknown sort key: " + key)
+			raise ValueError("unknown sort key: "+key)
 		key_funcs.append(func)
 
 	return lambda rec: tuple(key_func(rec) for key_func in key_funcs)
 
-
 class Entry(object):
-	__slots__ = 'inode', '_parent', 'stat', '__weakref__'
+	__slots__ = 'inode','_parent','stat','__weakref__'
 
-	def __init__(self, inode, parent=None):
-		self.inode = inode
+	def __init__(self,inode,parent=None):
+		self.inode  = inode
 		self.parent = parent
-		self.stat = None
+		self.stat   = None
 
 	@property
 	def parent(self):
 		return self._parent() if self._parent is not None else None
 
 	@parent.setter
-	def parent(self, parent):
+	def parent(self,parent):
 		self._parent = weakref.ref(parent) if parent is not None else None
-
 
 class Dir(Entry):
 	__slots__ = 'children',
 
-	def __init__(self, inode, children=None, parent=None):
-		Entry.__init__(self, inode, parent)
+	def __init__(self,inode,children=None,parent=None):
+		Entry.__init__(self,inode,parent)
 		if children is None:
 			self.children = OrderedDict()
 		else:
@@ -1244,17 +1198,15 @@ class Dir(Entry):
 			else:
 				yield child.record
 
-
 class File(Entry):
 	__slots__ = 'record',
 
-	def __init__(self, inode, record, parent=None):
-		Entry.__init__(self, inode, parent)
+	def __init__(self,inode,record,parent=None):
+		Entry.__init__(self,inode,parent)
 		self.record = record
 
 	def __repr__(self):
 		return 'File(%r, %r)' % (self.inode, self.record)
-
 
 if HAS_LLFUSE:
 	import errno
@@ -1262,19 +1214,18 @@ if HAS_LLFUSE:
 	import stat
 	import mmap
 
-	DIR_SELF = '.'.encode(sys.getfilesystemencoding())
+	DIR_SELF   = '.'.encode(sys.getfilesystemencoding())
 	DIR_PARENT = '..'.encode(sys.getfilesystemencoding())
 
-
 	class Operations(llfuse.Operations):
-		__slots__ = 'archive', 'root', 'inodes', 'arch_st', 'data'
+		__slots__ = 'archive','root','inodes','arch_st','data'
 
 		def __init__(self, archive, pak):
 			llfuse.Operations.__init__(self)
 			self.archive = archive
 			self.arch_st = os.fstat(archive.fileno())
-			self.root = Dir(llfuse.ROOT_INODE)
-			self.inodes = {self.root.inode: self.root}
+			self.root    = Dir(llfuse.ROOT_INODE)
+			self.inodes  = {self.root.inode: self.root}
 			self.root.parent = self.root
 
 			encoding = sys.getfilesystemencoding()
@@ -1295,8 +1246,7 @@ if HAS_LLFUSE:
 						inode += 1
 
 					if type(entry) is not Dir:
-						raise ValueError(
-							"name conflict in archive: %r is not a directory" % os.path.join(*path[:i + 1]))
+						raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 					parent = entry
 
@@ -1340,34 +1290,34 @@ if HAS_LLFUSE:
 		def _getattr(self, entry):
 			attrs = llfuse.EntryAttributes()
 
-			attrs.st_ino = entry.inode
-			attrs.st_rdev = 0
-			attrs.generation = 0
+			attrs.st_ino        = entry.inode
+			attrs.st_rdev       = 0
+			attrs.generation    = 0
 			attrs.entry_timeout = 300
-			attrs.attr_timeout = 300
+			attrs.attr_timeout  = 300
 
 			if type(entry) is Dir:
 				nlink = 2 if entry is not self.root else 1
-				size = 5
+				size  = 5
 
 				for name, child in entry.children.items():
 					size += len(name) + 1
 					if type(child) is Dir:
 						nlink += 1
 
-				attrs.st_mode = stat.S_IFDIR | 0o555
+				attrs.st_mode  = stat.S_IFDIR | 0o555
 				attrs.st_nlink = nlink
-				attrs.st_size = size
+				attrs.st_size  = size
 			else:
 				attrs.st_nlink = 1
-				attrs.st_mode = stat.S_IFREG | 0o444
-				attrs.st_size = entry.record.uncompressed_size
+				attrs.st_mode  = stat.S_IFREG | 0o444
+				attrs.st_size  = entry.record.uncompressed_size
 
 			arch_st = self.arch_st
-			attrs.st_uid = arch_st.st_uid
-			attrs.st_gid = arch_st.st_gid
+			attrs.st_uid     = arch_st.st_uid
+			attrs.st_gid     = arch_st.st_gid
 			attrs.st_blksize = arch_st.st_blksize
-			attrs.st_blocks = 1 + ((attrs.st_size - 1) // attrs.st_blksize) if attrs.st_size != 0 else 0
+			attrs.st_blocks  = 1 + ((attrs.st_size - 1) // attrs.st_blksize) if attrs.st_size != 0 else 0
 			if HAS_STAT_NS:
 				attrs.st_atime_ns = arch_st.st_atime_ns
 				attrs.st_mtime_ns = arch_st.st_mtime_ns
@@ -1469,14 +1419,14 @@ if HAS_LLFUSE:
 			attrs = llfuse.StatvfsData()
 
 			arch_st = self.arch_st
-			attrs.f_bsize = arch_st.st_blksize
+			attrs.f_bsize  = arch_st.st_blksize
 			attrs.f_frsize = arch_st.st_blksize
 			attrs.f_blocks = arch_st.st_blocks
-			attrs.f_bfree = 0
+			attrs.f_bfree  = 0
 			attrs.f_bavail = 0
 
-			attrs.f_files = len(self.inodes)
-			attrs.f_ffree = 0
+			attrs.f_files  = len(self.inodes)
+			attrs.f_ffree  = 0
 			attrs.f_favail = 0
 
 			return attrs
@@ -1512,14 +1462,13 @@ if HAS_LLFUSE:
 		def release(self, fh):
 			pass
 
-
 # based on http://code.activestate.com/recipes/66012/
 def deamonize(stdout='/dev/null', stderr=None, stdin='/dev/null'):
 	# Do first fork.
 	try:
 		pid = os.fork()
 		if pid > 0:
-			sys.exit(0)  # Exit first parent.
+			sys.exit(0) # Exit first parent.
 	except OSError as e:
 		sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
 		sys.exit(1)
@@ -1533,7 +1482,7 @@ def deamonize(stdout='/dev/null', stderr=None, stdin='/dev/null'):
 	try:
 		pid = os.fork()
 		if pid > 0:
-			sys.exit(0)  # Exit second parent.
+			sys.exit(0) # Exit second parent.
 	except OSError as e:
 		sys.stderr.write("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror))
 		sys.exit(1)
@@ -1557,7 +1506,6 @@ def deamonize(stdout='/dev/null', stderr=None, stdin='/dev/null'):
 	os.dup2(si.fileno(), sys.stdin.fileno())
 	os.dup2(so.fileno(), sys.stdout.fileno())
 	os.dup2(se.fileno(), sys.stderr.fileno())
-
 
 def main(argv):
 	import argparse
@@ -1596,59 +1544,57 @@ def main(argv):
 
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
 	parser.register('action', 'parsers', AliasedSubParsersAction)
-	parser.set_defaults(print0=False, verbose=False, check_integrity=False, progress=False, zlib=False)
+	parser.set_defaults(print0=False,verbose=False,check_integrity=False,progress=False,zlib=False)
 
 	subparsers = parser.add_subparsers(metavar='command')
 
-	unpack_parser = subparsers.add_parser('unpack', aliases=('x',), help='unpack archive')
+	unpack_parser = subparsers.add_parser('unpack',aliases=('x',),help='unpack archive')
 	unpack_parser.set_defaults(command='unpack')
-	unpack_parser.add_argument('-C', '--dir', type=str, default='.',
+	unpack_parser.add_argument('-C','--dir',type=str,default='.',
 							   help='directory to write unpacked files')
-	unpack_parser.add_argument('-p', '--progress', action='store_true', default=False,
+	unpack_parser.add_argument('-p','--progress',action='store_true',default=False,
 							   help='show progress')
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
-	pack_parser = subparsers.add_parser('pack', aliases=('c',), help="pack archive")
+	pack_parser = subparsers.add_parser('pack',aliases=('c',),help="pack archive")
 	pack_parser.set_defaults(command='pack')
-	pack_parser.add_argument('--archive-version', type=int, choices=[1, 2, 3], default=3,
-							 help='archive file format version')
-	pack_parser.add_argument('--mount-point', type=str, default=os.path.join('..', '..', '..', ''),
-							 help='archive mount point relative to its path')
-	pack_parser.add_argument('-z', '--zlib', action='store_true', default=False, help='use zlib compress')
-	pack_parser.add_argument('-p', '--progress', action='store_true', default=False,
+	pack_parser.add_argument('--archive-version',type=int,choices=[1,2,3],default=3,help='archive file format version')
+	pack_parser.add_argument('--mount-point',type=str,default=os.path.join('..','..','..',''),help='archive mount point relative to its path')
+	pack_parser.add_argument('-z', '--zlib',action='store_true',default=False,help='use zlib compress')
+	pack_parser.add_argument('-p','--progress',action='store_true',default=False,
 							 help='show progress')
 	add_print0_arg(pack_parser)
 	add_verbose_arg(pack_parser)
 	add_archive_arg(pack_parser)
 	pack_parser.add_argument('files', metavar='file', nargs='+', help='files and directories to pack')
 
-	list_parser = subparsers.add_parser('list', aliases=('l',), help='list archive contens')
+	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
 	list_parser.set_defaults(command='list')
 	add_human_arg(list_parser)
-	list_parser.add_argument('-d', '--details', action='store_true', default=False,
+	list_parser.add_argument('-d','--details',action='store_true',default=False,
 							 help='print file offsets and sizes')
-	list_parser.add_argument('-s', '--sort', dest='sort_key_func', metavar='KEYS', type=sort_key_func, default=None,
+	list_parser.add_argument('-s','--sort',dest='sort_key_func',metavar='KEYS',type=sort_key_func,default=None,
 							 help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
 								  'Prepend "-" to a key name to sort in descending order (descending order not supported for name).')
 	add_common_args(list_parser)
 
-	info_parser = subparsers.add_parser('info', aliases=('i',), help='print archive summary info')
+	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
 	info_parser.set_defaults(command='info')
 	add_human_arg(info_parser)
 	add_integrity_arg(info_parser)
 	add_archive_arg(info_parser)
 
-	check_parser = subparsers.add_parser('test', aliases=('t',), help='test archive integrity')
+	check_parser = subparsers.add_parser('test',aliases=('t',),help='test archive integrity')
 	check_parser.set_defaults(command='test')
 	add_print0_arg(check_parser)
 	add_archive_arg(check_parser)
 
-	mount_parser = subparsers.add_parser('mount', aliases=('m',), help='fuse mount archive')
+	mount_parser = subparsers.add_parser('mount',aliases=('m',),help='fuse mount archive')
 	mount_parser.set_defaults(command='mount')
-	mount_parser.add_argument('-d', '--debug', action='store_true', default=False,
+	mount_parser.add_argument('-d','--debug',action='store_true',default=False,
 							  help='print debug output (implies -f)')
-	mount_parser.add_argument('-f', '--foreground', action='store_true', default=False,
+	mount_parser.add_argument('-f','--foreground',action='store_true',default=False,
 							  help='foreground operation')
 	mount_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 	mount_parser.add_argument('mountpt', help='mount point')
@@ -1659,14 +1605,14 @@ def main(argv):
 	delim = '\0' if args.print0 else '\n'
 
 	if args.command == 'list':
-		with open(args.archive, "rb") as stream:
-			pak = read_index(stream, args.check_integrity)
-			pak.print_list(args.details, args.human, delim, args.sort_key_func, sys.stdout)
+		with open(args.archive,"rb") as stream:
+			pak = read_index(stream,args.check_integrity)
+			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
-		with open(args.archive, "rb") as stream:
-			pak = read_index(stream, args.check_integrity)
-			pak.print_info(args.human, sys.stdout)
+		with open(args.archive,"rb") as stream:
+			pak = read_index(stream,args.check_integrity)
+			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
 		state = {'error_count': 0}
@@ -1683,9 +1629,9 @@ def main(argv):
 			else:
 				sys.stdout.write("%s: %s%s" % (ctx, message, delim))
 
-		with open(args.archive, "rb") as stream:
+		with open(args.archive,"rb") as stream:
 			pak = read_index(stream)
-			pak.check_integrity(stream, callback)
+			pak.check_integrity(stream,callback)
 
 		if state['error_count'] == 0:
 			sys.stdout.write('All ok%s' % delim)
@@ -1699,21 +1645,20 @@ def main(argv):
 		elif args.progress:
 			global nDecompOffset
 			nDecompOffset = 0
-
 			def callback(name):
 				global nDecompOffset
 				nDecompOffset = nDecompOffset + 1
 				if nDecompOffset % 10 == 0:
-					print("Decompressing %3.02f%%" % (round(nDecompOffset / len(pak) * 100, 2)), end="\r")
+					print("Decompressing %3.02f%%" % (round(nDecompOffset/len(pak)*100,2)), end="\r")
 		else:
 			callback = lambda name: None
 
-		with open(args.archive, "rb") as stream:
-			pak = read_index(stream, args.check_integrity)
+		with open(args.archive,"rb") as stream:
+			pak = read_index(stream,args.check_integrity)
 			if args.files:
-				pak.unpack_only(stream, set(name.strip(os.path.sep) for name in args.files), args.dir, callback)
+				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
 			else:
-				pak.unpack(stream, args.dir, callback)
+				pak.unpack(stream,args.dir,callback)
 
 	elif args.command == 'pack':
 		if args.verbose:
@@ -1721,62 +1666,54 @@ def main(argv):
 		elif args.progress:
 			global nCompOffset
 			nCompOffset = 0
-
 			def callback(name, files):
 				global nCompOffset
 				nCompOffset = nCompOffset + 1
-				print("Compressing %3.02f%%" % (round(nCompOffset / len(files) * 100, 2)), end="\r")
+				print("Compressing %3.02f%%" % (round(nCompOffset/len(files)*100,2)), end="\r")
 		else:
 			callback = lambda name, files: None
 
 		compFmt = COMPR_NONE
 		if args.zlib == True: compFmt = COMPR_ZLIB
 
-		with open(args.archive, "wb") as stream:
-			pack(stream, args.files, args.mount_point, args.archive_version, compFmt, callback=callback)
+		with open(args.archive,"wb") as stream:
+			pack(stream,args.files,args.mount_point,args.archive_version,compFmt,callback=callback)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:
 			raise ValueError('the llfuse python module is needed for this feature')
 
-		with open(args.archive, "rb") as stream:
-			pak = read_index(stream, args.check_integrity)
-			pak.mount(stream, args.mountpt, args.foreground, args.debug)
+		with open(args.archive,"rb") as stream:
+			pak = read_index(stream,args.check_integrity)
+			pak.mount(stream,args.mountpt,args.foreground,args.debug)
 
 	else:
 		raise ValueError('unknown command: %s' % args.command)
 
-
 def add_integrity_arg(parser):
-	parser.add_argument('-t', '--test-integrity', action='store_true', default=False,
+	parser.add_argument('-t','--test-integrity',action='store_true',default=False,
 						help='perform extra integrity checks')
-
 
 def add_archive_arg(parser):
 	parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 
-
 def add_print0_arg(parser):
-	parser.add_argument('-0', '--print0', action='store_true', default=False,
+	parser.add_argument('-0','--print0',action='store_true',default=False,
 						help='seperate file names with nil bytes')
 
-
 def add_verbose_arg(parser):
-	parser.add_argument('-v', '--verbose', action='store_true', default=False,
+	parser.add_argument('-v','--verbose',action='store_true',default=False,
 						help='print verbose output')
 
-
 def add_human_arg(parser):
-	parser.add_argument('-u', '--human-readable', dest='human', action='store_true', default=False,
+	parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
 						help='print human readable file sizes')
-
 
 def add_common_args(parser):
 	add_print0_arg(parser)
 	add_verbose_arg(parser)
 	add_integrity_arg(parser)
 	add_archive_arg(parser)
-
 
 if __name__ == '__main__':
 	try:

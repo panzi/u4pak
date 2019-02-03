@@ -72,7 +72,7 @@ contain offset pointers to the data records.
        ?+1     4  uint32_t     compression block size
     end
     if version >= 4
-         ?     1  uint32_t      unknown
+         ?     1  uint32_t     unknown
     end
 
 ### Compression Block (CB)

@@ -230,6 +230,9 @@ class Pak(object):
 		elif self.version == 3:
 			read_record = read_record_v3
 
+		elif self.version == 4:
+			read_record = read_record_v4
+
 		def check_data(ctx, offset, size, sha1):
 			hasher = hashlib.sha1()
 			stream.seek(offset, 0)
@@ -245,11 +248,11 @@ class Pak(object):
 
 			if hasher.digest() != sha1:
 				callback(ctx,
-					'checksum missmatch:\n'
-					'\tgot:      %s\n'
-					'\texpected: %s' % (
-					hasher.hexdigest(),
-					hexlify(sha1).decode('latin1')))
+						 'checksum missmatch:\n'
+						 '\tgot:      %s\n'
+						 '\texpected: %s' % (
+							 hasher.hexdigest(),
+							 hexlify(sha1).decode('latin1')))
 
 		# test index sha1 sum
 		check_data("<archive index>", index_offset, self.index_size, self.index_sha1)
@@ -270,7 +273,7 @@ class Pak(object):
 
 			if r1.compression_method != COMPR_NONE and r1.compressed_size != r1.uncompressed_size:
 				callback(r1, 'file is not compressed but compressed size (%d) differes from uncompressed size (%d)' %
-					(r1.compressed_size, r1.uncompressed_size))
+						 (r1.compressed_size, r1.uncompressed_size))
 
 			if r1.data_offset + r1.compressed_size > index_offset:
 				callback('data bleeds into index')
@@ -487,7 +490,7 @@ class Record(namedtuple('RecordBase', [
 class RecordV1(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-		                      compression_method, timestamp, sha1, None, False, None)
+							  compression_method, timestamp, sha1, None, False, None)
 
 	@property
 	def header_size(self):
@@ -496,7 +499,7 @@ class RecordV1(Record):
 class RecordV2(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-		                      compression_method, None, sha1, None, False, None)
+							  compression_method, None, sha1, None, False, None)
 
 	@property
 	def header_size(self):
@@ -504,14 +507,28 @@ class RecordV2(Record):
 
 class RecordV3(Record):
 	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
-	             compression_blocks, encrypted, compression_block_size):
+				compression_blocks, encrypted, compression_block_size):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-		                      compression_method, None, sha1, compression_blocks, encrypted,
-		                      compression_block_size)
+							  compression_method, None, sha1, compression_blocks, encrypted,
+							  compression_block_size)
 
 	@property
 	def header_size(self):
 		size = 53
+		if self.compression_method != COMPR_NONE:
+			size += len(self.compression_blocks) * 16
+		return size
+
+class RecordV4(Record):
+	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
+				compression_blocks, encrypted, compression_block_size):
+		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
+							  compression_method, None, sha1, compression_blocks, encrypted,
+							  compression_block_size)
+
+	@property
+	def header_size(self):
+		size = 57
 		if self.compression_method != COMPR_NONE:
 			size += len(self.compression_blocks) * 16
 		return size
@@ -549,7 +566,24 @@ def read_record_v3(stream, filename):
 	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
-	                sha1, blocks, encrypted != 0, compression_block_size)
+					sha1, blocks, encrypted != 0, compression_block_size)
+
+def read_record_v4(stream, filename):
+	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
+		st_unpack('<QQQI20s', stream.read(48))
+
+	# sys.stdout.write('compression_method = %s\n' % compression_method)
+	if compression_method != COMPR_NONE:
+		block_count, = st_unpack('<I', stream.read(4))
+		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
+		blocks = [(blocks[i], blocks[i + 1]) for i in xrange(0, block_count * 2, 2)]
+	else:
+		blocks = None
+
+	encrypted, compression_block_size, unknown = st_unpack('<BII', stream.read(9))
+
+	return RecordV4(filename, offset, compressed_size, uncompressed_size, compression_method,
+					sha1, blocks, encrypted != 0, compression_block_size)
 
 def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if compression_method != COMPR_NONE:
@@ -744,6 +778,9 @@ def read_index(stream,check_integrity=False):
 	elif version == 3:
 		read_record = read_record_v3
 
+	elif version == 4:
+		read_record = read_record_v4
+
 	else:
 		raise ValueError('unsupported version: %d' % version)
 
@@ -771,7 +808,7 @@ def read_index(stream,check_integrity=False):
 	return pak
 
 def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
-         encrypted=False,compression_block_size=0,callback=lambda name, files: None):
+		 encrypted=False,compression_block_size=0,callback=lambda name, files: None):
 	if version == 1:
 		write_record = write_record_v1
 
@@ -829,7 +866,7 @@ def write_index(stream,version,mount_point,records):
 # TODO: untested!
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
 def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
-         encrypted=False,compression_block_size=0,callback=lambda name: None):
+		   encrypted=False,compression_block_size=0,callback=lambda name: None):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
@@ -1338,8 +1375,8 @@ if HAS_LLFUSE:
 
 				else:
 					return ['user.u4pak.sha1', 'user.u4pak.compressed_size',
-					        'user.u4pak.compression_method', 'user.u4pak.compression_block_size',
-					        'user.u4pak.encrypted']
+							'user.u4pak.compression_method', 'user.u4pak.compression_block_size',
+							'user.u4pak.encrypted']
 
 		def access(self, inode, mode, ctx):
 			try:
@@ -1482,7 +1519,7 @@ def main(argv):
 				if aliases:
 					dest += ' (%s)' % ','.join(aliases)
 				sup = super(AliasedSubParsersAction._AliasedPseudoAction, self)
-				sup.__init__(option_strings=[], dest=dest, help=help) 
+				sup.__init__(option_strings=[], dest=dest, help=help)
 
 		def add_parser(self, name, **kwargs):
 			if 'aliases' in kwargs:
@@ -1514,9 +1551,9 @@ def main(argv):
 	unpack_parser = subparsers.add_parser('unpack',aliases=('x',),help='unpack archive')
 	unpack_parser.set_defaults(command='unpack')
 	unpack_parser.add_argument('-C','--dir',type=str,default='.',
-		help='directory to write unpacked files')
+							   help='directory to write unpacked files')
 	unpack_parser.add_argument('-p','--progress',action='store_true',default=False,
-		help='show progress')
+							   help='show progress')
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
@@ -1526,7 +1563,7 @@ def main(argv):
 	pack_parser.add_argument('--mount-point',type=str,default=os.path.join('..','..','..',''),help='archive mount point relative to its path')
 	pack_parser.add_argument('-z', '--zlib',action='store_true',default=False,help='use zlib compress')
 	pack_parser.add_argument('-p','--progress',action='store_true',default=False,
-		help='show progress')
+							 help='show progress')
 	add_print0_arg(pack_parser)
 	add_verbose_arg(pack_parser)
 	add_archive_arg(pack_parser)
@@ -1536,10 +1573,10 @@ def main(argv):
 	list_parser.set_defaults(command='list')
 	add_human_arg(list_parser)
 	list_parser.add_argument('-d','--details',action='store_true',default=False,
-		help='print file offsets and sizes')
+							 help='print file offsets and sizes')
 	list_parser.add_argument('-s','--sort',dest='sort_key_func',metavar='KEYS',type=sort_key_func,default=None,
-		help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
-		     'Prepend "-" to a key name to sort in descending order (descending order not supported for name).')
+							 help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
+								  'Prepend "-" to a key name to sort in descending order (descending order not supported for name).')
 	add_common_args(list_parser)
 
 	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
@@ -1556,9 +1593,9 @@ def main(argv):
 	mount_parser = subparsers.add_parser('mount',aliases=('m',),help='fuse mount archive')
 	mount_parser.set_defaults(command='mount')
 	mount_parser.add_argument('-d','--debug',action='store_true',default=False,
-		help='print debug output (implies -f)')
+							  help='print debug output (implies -f)')
 	mount_parser.add_argument('-f','--foreground',action='store_true',default=False,
-		help='foreground operation')
+							  help='foreground operation')
 	mount_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 	mount_parser.add_argument('mountpt', help='mount point')
 	add_integrity_arg(mount_parser)
@@ -1655,22 +1692,22 @@ def main(argv):
 
 def add_integrity_arg(parser):
 	parser.add_argument('-t','--test-integrity',action='store_true',default=False,
-		help='perform extra integrity checks')
+						help='perform extra integrity checks')
 
 def add_archive_arg(parser):
 	parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 
 def add_print0_arg(parser):
 	parser.add_argument('-0','--print0',action='store_true',default=False,
-		help='seperate file names with nil bytes')
+						help='seperate file names with nil bytes')
 
 def add_verbose_arg(parser):
 	parser.add_argument('-v','--verbose',action='store_true',default=False,
-		help='print verbose output')
+						help='print verbose output')
 
 def add_human_arg(parser):
 	parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
-		help='print human readable file sizes')
+						help='print human readable file sizes')
 
 def add_common_args(parser):
 	add_print0_arg(parser)

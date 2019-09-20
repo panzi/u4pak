@@ -533,16 +533,16 @@ class RecordV4(Record):
 			size += len(self.compression_blocks) * 16
 		return size
 
-def read_path(stream):
+def read_path(stream,encoding='utf-8'):
 	path_len, = st_unpack('<I',stream.read(4))
-	return stream.read(path_len).rstrip(b'\0').decode('utf-8').replace('/',os.path.sep)
+	return stream.read(path_len).rstrip(b'\0').decode(encoding).replace('/',os.path.sep)
 
-def pack_path(path):
+def pack_path(path,encoding='utf-8'):
 	path = path.replace(os.path.sep,'/').encode('utf-8') + b'\0'
 	return st_pack('<I', len(path)) + path
 
-def write_path(stream,path):
-	data = pack_path(path)
+def write_path(stream,path,encoding='utf-8'):
+	data = pack_path(path,encoding)
 	stream.write(data)
 	return data
 
@@ -760,13 +760,13 @@ def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 	else:
 		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
-def read_index(stream,check_integrity=False):
+def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8'):
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
 	magic, version, index_offset, index_size, index_sha1 = st_unpack('<IIQQ20s',footer)
 
-	if magic != 0x5A6F12E1:
+	if not ignore_magic and magic != 0x5A6F12E1:
 		raise ValueError('illegal file magic: 0x%08x' % magic)
 
 	if version == 1:
@@ -789,13 +789,13 @@ def read_index(stream,check_integrity=False):
 
 	stream.seek(index_offset, 0)
 
-	mount_point = read_path(stream)
+	mount_point = read_path(stream, encoding)
 	entry_count = st_unpack('<I',stream.read(4))[0]
 
 	pak = Pak(version, index_offset, index_size, footer_offset, index_sha1, mount_point)
 
 	for i in xrange(entry_count):
-		filename = read_path(stream)
+		filename = read_path(stream, encoding)
 		record   = read_record(stream, filename)
 		pak.records.append(record)
 
@@ -808,7 +808,8 @@ def read_index(stream,check_integrity=False):
 	return pak
 
 def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
-		 encrypted=False,compression_block_size=0,callback=lambda name, files: None):
+		 encrypted=False,compression_block_size=0,callback=lambda name, files: None,
+		 encoding='utf-8'):
 	if version == 1:
 		write_record = write_record_v1
 
@@ -839,19 +840,19 @@ def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NON
 			record = write_record(stream,fh,compression_method,encrypted,compression_block_size)
 			records.append((filename, record))
 
-	write_index(stream,version,mount_point,records)
+	write_index(stream,version,mount_point,records,encoding)
 
-def write_index(stream,version,mount_point,records):
+def write_index(stream,version,mount_point,records,encoding='utf-8'):
 	hasher = hashlib.sha1()
 	index_offset = stream.tell()
 
-	index_header = pack_path(mount_point) + st_pack('<I',len(records))
+	index_header = pack_path(mount_point, encoding) + st_pack('<I',len(records))
 	index_size   = len(index_header)
 	hasher.update(index_header)
 	stream.write(index_header)
 
 	for filename, record in records:
-		filename = pack_path(filename)
+		filename = pack_path(filename, encoding)
 		hasher.update(filename)
 		stream.write(filename)
 		index_size += len(filename)
@@ -866,14 +867,15 @@ def write_index(stream,version,mount_point,records):
 # TODO: untested!
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
 def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
-		   encrypted=False,compression_block_size=0,callback=lambda name: None):
+		   encrypted=False,compression_block_size=0,callback=lambda name: None,
+		   ignore_magic=False,encoding='utf-8'):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
 	if encrypted:
 		raise NotImplementedError("encryption is not implemented")
 
-	pak = read_index(stream)
+	pak = read_index(stream, False, ignore_magic, encoding)
 
 	if pak.version == 1:
 		write_record = write_record_v1
@@ -1051,7 +1053,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 			record_bytes = stream.read(record.header_size)
 		index_records.append((filename, record_bytes))
 
-	write_index(stream,pak.version,mount_point,index_records)
+	write_index(stream,pak.version,mount_point,index_records,encoding)
 
 	if diff_size < 0:
 		stream.truncate(arch_size)
@@ -1606,12 +1608,12 @@ def main(argv):
 
 	if args.command == 'list':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream,args.check_integrity)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream,args.check_integrity)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
 			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
@@ -1630,7 +1632,7 @@ def main(argv):
 				sys.stdout.write("%s: %s%s" % (ctx, message, delim))
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream)
+			pak = read_index(stream, False, args.ignore_magic, args.encoding)
 			pak.check_integrity(stream,callback)
 
 		if state['error_count'] == 0:
@@ -1654,7 +1656,7 @@ def main(argv):
 			callback = lambda name: None
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream,args.check_integrity)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
 			if args.files:
 				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
 			else:
@@ -1677,15 +1679,16 @@ def main(argv):
 		if args.zlib == True: compFmt = COMPR_ZLIB
 
 		with open(args.archive,"wb") as stream:
-			pack(stream,args.files,args.mount_point,args.archive_version,compFmt,callback=callback)
+			pack(stream, args.files, args.mount_point, args.archive_version, compFmt,
+			     callback=callback, encoding=args.encoding)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:
 			raise ValueError('the llfuse python module is needed for this feature')
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream,args.check_integrity)
-			pak.mount(stream,args.mountpt,args.foreground,args.debug)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
+			pak.mount(stream, args.mountpt, args.foreground, args.debug)
 
 	else:
 		raise ValueError('unknown command: %s' % args.command)
@@ -1714,6 +1717,10 @@ def add_common_args(parser):
 	add_verbose_arg(parser)
 	add_integrity_arg(parser)
 	add_archive_arg(parser)
+	parser.add_argument('--ignore-magic',action='store_true',default=False,
+						help="don't error out if file magic missmatches")
+	parser.add_argument('--encoding',type=str,default='UTF-8',
+						help='charcter encoding of file names to use (default: UTF-8)')
 
 if __name__ == '__main__':
 	try:

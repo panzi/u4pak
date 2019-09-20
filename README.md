@@ -11,13 +11,18 @@ Basic usage:
     u4pak.py pack <archive> <files>         - create .pak archive
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
 
-Only unencryped and uncompressed archives of version 1, 2, and 3 are supported.
-Note that only version 2 and 3 are tested.
+Only unencryped and uncompressed archives of version 1, 2, 3 and 4 are supported.
+Note that only version 2 and 3 are tested and version 4 is read-only.
 
 The `mount` command depends on the [llfuse](https://code.google.com/p/python-llfuse/)
 Python package. If it's not available the rest is still working.
 
 This script is compatible with Python 2.7 and 3 (tested with 2.7.5 and 3.3.2).
+
+If you get errors saying anything about `'utf8' codec can't decode byte [...]` try to
+use another encoding by passing `--encoding iso-8859-1` or similar.
+
+If you get an error message about an illegal file magic try to pass `--ignore-magic`.
 
 File Format
 -----------
@@ -38,11 +43,11 @@ for Linux (which contains a 2.5 GB .pak file).
 
 Basic layout:
 
- * Data Records
- * Index
+* Data Records
+* Index
   * Index Header
   * Index Records
- * Footer
+* Footer
 
 In order to parse a file you need to read the footer first. The footer contains
 an offset pointer to the start of the index records. The index records then
@@ -122,11 +127,11 @@ Size: 44 bytes
 Related Projects
 ----------------
 
- * [fezpak](https://github.com/panzi/fezpak): pack, unpack, list and mount FEZ .pak archives
- * [psypkg](https://github.com/panzi/psypkg): pack, unpack, list and mount Psychonauts .pkg archives
- * [bgebf](https://github.com/panzi/bgebf): unpack, list and mount Beyond Good and Evil .bf archives
- * [unvpk](https://bitbucket.org/panzi/unvpk): extract, list, check and mount Valve .vpk archives
- * [t2fbq](https://github.com/panzi/t2fbq): unpack, list and mount Trine 2 .fbq archives
+* [fezpak](https://github.com/panzi/fezpak): pack, unpack, list and mount FEZ .pak archives
+* [psypkg](https://github.com/panzi/psypkg): pack, unpack, list and mount Psychonauts .pkg archives
+* [bgebf](https://github.com/panzi/bgebf): unpack, list and mount Beyond Good and Evil .bf archives
+* [unvpk](https://bitbucket.org/panzi/unvpk): extract, list, check and mount Valve .vpk archives
+* [t2fbq](https://github.com/panzi/t2fbq): unpack, list and mount Trine 2 .fbq archives
 
 BSD License
 -----------

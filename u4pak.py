@@ -760,7 +760,7 @@ def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 	else:
 		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
-def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8'):
+def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',force_version=None):
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
@@ -768,6 +768,9 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8')
 
 	if not ignore_magic and magic != 0x5A6F12E1:
 		raise ValueError('illegal file magic: 0x%08x' % magic)
+
+	if force_version is not None:
+		version = force_version
 
 	if version == 1:
 		read_record = read_record_v1
@@ -868,14 +871,14 @@ def write_index(stream,version,mount_point,records,encoding='utf-8'):
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
 def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
 		   encrypted=False,compression_block_size=0,callback=lambda name: None,
-		   ignore_magic=False,encoding='utf-8'):
+		   ignore_magic=False,encoding='utf-8',force_version=None):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
 	if encrypted:
 		raise NotImplementedError("encryption is not implemented")
 
-	pak = read_index(stream, False, ignore_magic, encoding)
+	pak = read_index(stream, False, ignore_magic, encoding, force_version)
 
 	if pak.version == 1:
 		write_record = write_record_v1
@@ -1608,12 +1611,12 @@ def main(argv):
 
 	if args.command == 'list':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
 			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
@@ -1632,7 +1635,7 @@ def main(argv):
 				sys.stdout.write("%s: %s%s" % (ctx, message, delim))
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, False, args.ignore_magic, args.encoding)
+			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version)
 			pak.check_integrity(stream,callback)
 
 		if state['error_count'] == 0:
@@ -1656,7 +1659,7 @@ def main(argv):
 			callback = lambda name: None
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
 			if args.files:
 				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
 			else:
@@ -1687,7 +1690,7 @@ def main(argv):
 			raise ValueError('the llfuse python module is needed for this feature')
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
 			pak.mount(stream, args.mountpt, args.foreground, args.debug)
 
 	else:
@@ -1721,6 +1724,8 @@ def add_common_args(parser):
 						help="don't error out if file magic missmatches")
 	parser.add_argument('--encoding',type=str,default='UTF-8',
 						help='charcter encoding of file names to use (default: UTF-8)')
+	parser.add_argument('--force-version',type=int,default=None,
+						help='use this format version when parsing the file instead of the version read from the archive')
 
 if __name__ == '__main__':
 	try:

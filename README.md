@@ -20,9 +20,11 @@ Python package. If it's not available the rest is still working.
 This script is compatible with Python 2.7 and 3 (tested with 2.7.5 and 3.3.2).
 
 If you get errors saying anything about `'utf8' codec can't decode byte [...]` try to
-use another encoding by passing `--encoding iso-8859-1` or similar.
+use another encoding by passing `--encoding=iso-8859-1` or similar.
 
 If you get an error message about an illegal file magic try to pass `--ignore-magic`.
+If you get an error message about the archive version being 0 try to pass
+`--force-version=1` (or a higher number).
 
 File Format
 -----------

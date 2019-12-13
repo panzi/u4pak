@@ -1559,6 +1559,7 @@ def main(argv):
 							   help='directory to write unpacked files')
 	unpack_parser.add_argument('-p','--progress',action='store_true',default=False,
 							   help='show progress')
+	add_hack_args(unpack_parser)
 	add_common_args(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
@@ -1572,6 +1573,7 @@ def main(argv):
 	add_print0_arg(pack_parser)
 	add_verbose_arg(pack_parser)
 	add_archive_arg(pack_parser)
+	add_encoding_arg(pack_parser)
 	pack_parser.add_argument('files', metavar='file', nargs='+', help='files and directories to pack')
 
 	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
@@ -1582,6 +1584,7 @@ def main(argv):
 	list_parser.add_argument('-s','--sort',dest='sort_key_func',metavar='KEYS',type=sort_key_func,default=None,
 							 help='sort file list. Comma seperated list of sort keys. Keys are "size", "zsize", "offset", and "name". '
 								  'Prepend "-" to a key name to sort in descending order (descending order not supported for name).')
+	add_hack_args(list_parser)
 	add_common_args(list_parser)
 
 	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
@@ -1589,11 +1592,13 @@ def main(argv):
 	add_human_arg(info_parser)
 	add_integrity_arg(info_parser)
 	add_archive_arg(info_parser)
+	add_hack_args(info_parser)
 
 	check_parser = subparsers.add_parser('test',aliases=('t',),help='test archive integrity')
 	check_parser.set_defaults(command='test')
 	add_print0_arg(check_parser)
 	add_archive_arg(check_parser)
+	add_hack_args(check_parser)
 
 	mount_parser = subparsers.add_parser('mount',aliases=('m',),help='fuse mount archive')
 	mount_parser.set_defaults(command='mount')
@@ -1604,6 +1609,7 @@ def main(argv):
 	mount_parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 	mount_parser.add_argument('mountpt', help='mount point')
 	add_integrity_arg(mount_parser)
+	add_hack_args(mount_parser)
 
 	args = parser.parse_args(argv)
 
@@ -1715,17 +1721,22 @@ def add_human_arg(parser):
 	parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
 						help='print human readable file sizes')
 
+def add_encoding_arg(parser):
+	parser.add_argument('--encoding',type=str,default='UTF-8',
+						help='charcter encoding of file names to use (default: UTF-8)')
+
+def add_hack_args(parser):
+	add_encoding_arg(parser)
+	parser.add_argument('--ignore-magic',action='store_true',default=False,
+						help="don't error out if file magic missmatches")
+	parser.add_argument('--force-version',type=int,default=None,
+						help='use this format version when parsing the file instead of the version read from the archive')
+
 def add_common_args(parser):
 	add_print0_arg(parser)
 	add_verbose_arg(parser)
 	add_integrity_arg(parser)
 	add_archive_arg(parser)
-	parser.add_argument('--ignore-magic',action='store_true',default=False,
-						help="don't error out if file magic missmatches")
-	parser.add_argument('--encoding',type=str,default='UTF-8',
-						help='charcter encoding of file names to use (default: UTF-8)')
-	parser.add_argument('--force-version',type=int,default=None,
-						help='use this format version when parsing the file instead of the version read from the archive')
 
 if __name__ == '__main__':
 	try:

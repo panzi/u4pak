@@ -1549,7 +1549,7 @@ def main(argv):
 
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
 	parser.register('action', 'parsers', AliasedSubParsersAction)
-	parser.set_defaults(print0=False,verbose=False,check_integrity=False,progress=False,zlib=False)
+	parser.set_defaults(print0=False,verbose=False,check_integrity=False,progress=False,zlib=False,command=None)
 
 	subparsers = parser.add_subparsers(metavar='command')
 
@@ -1615,7 +1615,10 @@ def main(argv):
 
 	delim = '\0' if args.print0 else '\n'
 
-	if args.command == 'list':
+	if args.command is None:
+		parser.print_help()
+
+	elif args.command == 'list':
 		with open(args.archive,"rb") as stream:
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)

@@ -46,22 +46,6 @@ HAS_STAT_NS = hasattr(os.stat_result, 'st_atime_ns')
 
 __all__ = 'read_index', 'pack'
 
-# for Python 2/3 compatibility:
-try:
-	xrange
-except NameError:
-	xrange = range
-
-try:
-	buffer
-except NameError:
-	buffer = memoryview
-
-try:
-	itervalues = dict.itervalues
-except AttributeError:
-	itervalues = dict.values
-
 # for Python < 3.3 and Windows
 def highlevel_sendfile(outfile,infile,offset,size):
 	infile.seek(offset,0)
@@ -571,7 +555,7 @@ def read_record_v3(stream, filename):
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I',stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i+1]) for i in xrange(0, block_count * 2, 2)]
+		blocks = [(blocks[i], blocks[i+1]) for i in range(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
@@ -588,7 +572,7 @@ def read_record_v4(stream, filename):
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I', stream.read(4))
 		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i + 1]) for i in xrange(0, block_count * 2, 2)]
+		blocks = [(blocks[i], blocks[i + 1]) for i in range(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
@@ -653,7 +637,7 @@ def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=Fals
 	while bytes_left > 0:
 		if bytes_left >= buf_size:
 			n = fh.readinto(buf)
-			data = zlib.compress(buffer(buf))
+			data = zlib.compress(memoryview(buf))
 
 			compressed_size += len(data)
 			compress_blocks[compress_block_no * 2] = cur_offset
@@ -809,7 +793,7 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 
 	pak = Pak(version, index_offset, index_size, footer_offset, index_sha1, mount_point)
 
-	for i in xrange(entry_count):
+	for i in range(entry_count):
 		filename = read_path(stream, encoding)
 		record   = read_record(stream, filename)
 		pak.records.append(record)
@@ -1208,7 +1192,7 @@ class Dir(Entry):
 		return 'Dir(%r, %r)' % (self.inode, self.children)
 
 	def allrecords(self):
-		for child in itervalues(self.children):
+		for child in self.children.values():
 			if type(child) is Dir:
 				for record in child.allrecords():
 					yield record

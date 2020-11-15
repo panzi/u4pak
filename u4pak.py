@@ -1624,10 +1624,9 @@ def main(argv):
 		if args.verbose:
 			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
 		elif args.progress:
-			global nDecompOffset
 			nDecompOffset = 0
 			def callback(name):
-				global nDecompOffset
+				nonlocal nDecompOffset
 				nDecompOffset = nDecompOffset + 1
 				if nDecompOffset % 10 == 0:
 					print("Decompressing %3.02f%%" % (round(nDecompOffset/len(pak)*100,2)), end="\r")
@@ -1645,10 +1644,9 @@ def main(argv):
 		if args.verbose:
 			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
 		elif args.progress:
-			global nCompOffset
 			nCompOffset = 0
 			def callback(name, files):
-				global nCompOffset
+				nonlocal nCompOffset
 				nCompOffset = nCompOffset + 1
 				print("Compressing %3.02f%%" % (round(nCompOffset/len(files)*100,2)), end="\r")
 		else:

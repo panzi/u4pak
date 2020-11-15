@@ -218,7 +218,7 @@ class Pak(object):
 		return 'Pak(version=%r, index_offset=%r, index_size=%r, footer_offset=%r, index_sha1=%r, mount_point=%r, records=%r)' % (
 			self.version, self.index_offset, self.index_size, self.footer_offset, self.index_sha1, self.mount_point, self.records)
 
-	def check_integrity(self,stream,callback=raise_check_error):
+	def check_integrity(self,stream,callback=raise_check_error,ignore_null_checksums=False):
 		index_offset = self.index_offset
 		buf = bytearray(DEFAULT_BUFFER_SIZE)
 
@@ -235,6 +235,9 @@ class Pak(object):
 			read_record = read_record_v4
 
 		def check_data(ctx, offset, size, sha1):
+			if ignore_null_checksums and sha1 == b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00':
+				return
+
 			hasher = hashlib.sha1()
 			stream.seek(offset, 0)
 
@@ -435,7 +438,7 @@ class Record(NamedTuple):
 	uncompressed_size:      int
 	compression_method:     int
 	timestamp:              Optional[int]
-	sha1:                   int
+	sha1:                   bytes
 	compression_blocks:     Optional[int]
 	encrypted:              bool
 	compression_block_size: Optional[int]
@@ -769,7 +772,7 @@ def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 	else:
 		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
-def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',force_version=None):
+def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',force_version=None,ignore_null_checksums=False):
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
@@ -815,7 +818,7 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 		raise ValueError('index bleeds into footer')
 
 	if check_integrity:
-		pak.check_integrity(stream)
+		pak.check_integrity(stream,None,ignore_null_checksums)
 
 	return pak
 
@@ -1525,12 +1528,12 @@ def main(argv):
 	import argparse
 
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
-	parser.set_defaults(print0=False,verbose=False,check_integrity=False,progress=False,zlib=False,command=None)
+	parser.set_defaults(print0=False,verbose=False,progress=False,zlib=False,command=None)
 
 	subparsers = parser.add_subparsers(metavar='command')
 
 	unpack_parser = subparsers.add_parser('unpack',aliases=('x',),help='unpack archive')
-	unpack_parser.set_defaults(command='unpack')
+	unpack_parser.set_defaults(command='unpack',check_integrity=False,ignore_null_checksums=False)
 	unpack_parser.add_argument('-C','--dir',type=str,default='.',
 							   help='directory to write unpacked files')
 	unpack_parser.add_argument('-p','--progress',action='store_true',default=False,
@@ -1553,7 +1556,7 @@ def main(argv):
 	pack_parser.add_argument('files', metavar='file', nargs='+', help='files and directories to pack')
 
 	list_parser = subparsers.add_parser('list',aliases=('l',),help='list archive contens')
-	list_parser.set_defaults(command='list')
+	list_parser.set_defaults(command='list',check_integrity=False,ignore_null_checksums=False)
 	add_human_arg(list_parser)
 	list_parser.add_argument('-d','--details',action='store_true',default=False,
 							 help='print file offsets and sizes')
@@ -1564,7 +1567,7 @@ def main(argv):
 	add_common_args(list_parser)
 
 	info_parser = subparsers.add_parser('info',aliases=('i',),help='print archive summary info')
-	info_parser.set_defaults(command='info')
+	info_parser.set_defaults(command='info',check_integrity=False,ignore_null_checksums=False)
 	add_human_arg(info_parser)
 	add_integrity_arg(info_parser)
 	add_archive_arg(info_parser)
@@ -1577,7 +1580,7 @@ def main(argv):
 	add_hack_args(check_parser)
 
 	mount_parser = subparsers.add_parser('mount',aliases=('m',),help='fuse mount archive')
-	mount_parser.set_defaults(command='mount')
+	mount_parser.set_defaults(command='mount',check_integrity=False,ignore_null_checksums=False)
 	mount_parser.add_argument('-d','--debug',action='store_true',default=False,
 							  help='print debug output (implies -f)')
 	mount_parser.add_argument('-f','--foreground',action='store_true',default=False,
@@ -1596,12 +1599,12 @@ def main(argv):
 
 	elif args.command == 'list':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
@@ -1620,8 +1623,8 @@ def main(argv):
 				sys.stdout.write("%s: %s%s" % (ctx, message, delim))
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version)
-			pak.check_integrity(stream,callback)
+			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
+			pak.check_integrity(stream,callback,args.ignore_null_checksums)
 
 		if state['error_count'] == 0:
 			sys.stdout.write('All ok%s' % delim)
@@ -1643,7 +1646,7 @@ def main(argv):
 			callback = lambda name: None
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			if args.files:
 				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
 			else:
@@ -1673,15 +1676,17 @@ def main(argv):
 			raise ValueError('the llfuse python module is needed for this feature')
 
 		with open(args.archive,"rb") as stream:
-			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version)
+			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.mount(stream, args.mountpt, args.foreground, args.debug)
 
 	else:
 		raise ValueError('unknown command: %s' % args.command)
 
 def add_integrity_arg(parser):
-	parser.add_argument('-t','--test-integrity',action='store_true',default=False,
-						help='perform extra integrity checks')
+	parser.add_argument('-i','--check-integrity',action='store_true',default=False,
+						help='meta-data sanity check and verify checksums')
+	parser.add_argument('--ignore-null-checksums',action='store_true',default=False,
+						help='ignore checksums that are all nulls')
 
 def add_archive_arg(parser):
 	parser.add_argument('archive', help='Unreal Engine 4 .pak archive')

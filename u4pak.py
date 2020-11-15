@@ -30,9 +30,10 @@ import zlib
 import math
 
 from struct import unpack as st_unpack, pack as st_pack
-from collections import OrderedDict, namedtuple
+from collections import OrderedDict
 from io import DEFAULT_BUFFER_SIZE
 from binascii import hexlify
+from typing import NamedTuple, Optional
 
 try:
 	import llfuse
@@ -427,9 +428,17 @@ COMPR_METHOD_NAMES = {
 	COMPR_BIAS_SPEED:  'bias speed'
 }
 
-class Record(namedtuple('RecordBase', [
-	'filename', 'offset', 'compressed_size', 'uncompressed_size', 'compression_method',
-	'timestamp', 'sha1', 'compression_blocks', 'encrypted', 'compression_block_size'])):
+class Record(NamedTuple):
+	filename:               str
+	offset:                 int
+	compressed_size:        int
+	uncompressed_size:      int
+	compression_method:     int
+	timestamp:              Optional[int]
+	sha1:                   int
+	compression_blocks:     Optional[int]
+	encrypted:              bool
+	compression_block_size: Optional[int]
 
 	def sendfile(self,outfile,infile):
 		if self.compression_method == COMPR_NONE:
@@ -447,7 +456,7 @@ class Record(namedtuple('RecordBase', [
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
 
-	def read(self,data,offset,size):
+	def read(self,data,offset: int, size: int):
 		if self.compression_method == COMPR_NONE:
 			uncompressed_size = self.uncompressed_size
 

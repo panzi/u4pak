@@ -259,7 +259,7 @@ class Pak(object):
 			if r1.compression_method not in COMPR_METHODS:
 				callback(r1, 'unknown compression method: 0x%02x' % r1.compression_method)
 
-			if r1.compression_method != COMPR_NONE and r1.compressed_size != r1.uncompressed_size:
+			if r1.compression_method == COMPR_NONE and r1.compressed_size != r1.uncompressed_size:
 				callback(r1, 'file is not compressed but compressed size (%d) differes from uncompressed size (%d)' %
 						 (r1.compressed_size, r1.uncompressed_size))
 

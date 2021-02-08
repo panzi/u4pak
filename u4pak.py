@@ -33,7 +33,7 @@ from struct import unpack as st_unpack, pack as st_pack
 from collections import OrderedDict
 from io import DEFAULT_BUFFER_SIZE
 from binascii import hexlify
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Tuple, List, Dict
 
 try:
 	import llfuse
@@ -423,7 +423,7 @@ class Record(NamedTuple):
 	compression_method:     int
 	timestamp:              Optional[int]
 	sha1:                   bytes
-	compression_blocks:     Optional[int]
+	compression_blocks:     Optional[List[Tuple[int, int]]]
 	encrypted:              bool
 	compression_block_size: Optional[int]
 
@@ -433,6 +433,7 @@ class Record(NamedTuple):
 		elif self.compression_method == COMPR_ZLIB:
 			if self.encrypted:
 				raise NotImplementedError('zlib decompression with encryption is not implemented yet')
+			assert self.compression_blocks is not None
 			for block in self.compression_blocks:
 				block_offset = block[0]
 				block_size = block[1] - block[0]
@@ -512,6 +513,7 @@ class RecordV3(Record):
 	def header_size(self):
 		size = 53
 		if self.compression_method != COMPR_NONE:
+			assert self.compression_blocks is not None
 			size += len(self.compression_blocks) * 16
 		return size
 
@@ -526,6 +528,7 @@ class RecordV4(Record):
 	def header_size(self):
 		size = 57
 		if self.compression_method != COMPR_NONE:
+			assert self.compression_blocks is not None
 			size += len(self.compression_blocks) * 16
 		return size
 
@@ -552,10 +555,11 @@ def read_record_v3(stream, filename):
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
 		st_unpack('<QQQI20s',stream.read(48))
 
+	blocks: Optional[List[Tuple[int, int]]]
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I',stream.read(4))
-		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i+1]) for i in range(0, block_count * 2, 2)]
+		blocks_bin = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
+		blocks = [(blocks_bin[i], blocks_bin[i+1]) for i in range(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
@@ -569,10 +573,11 @@ def read_record_v4(stream, filename):
 		st_unpack('<QQQI20s', stream.read(48))
 
 	# sys.stdout.write('compression_method = %s\n' % compression_method)
+	blocks: Optional[List[Tuple[int, int]]]
 	if compression_method != COMPR_NONE:
 		block_count, = st_unpack('<I', stream.read(4))
-		blocks = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks[i], blocks[i + 1]) for i in range(0, block_count * 2, 2)]
+		blocks_bin = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
+		blocks = [(blocks_bin[i], blocks_bin[i + 1]) for i in range(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
@@ -806,9 +811,12 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 
 	return pak
 
-def pack(stream,files_or_dirs,mount_point,version=3,compression_method=COMPR_NONE,
-		 encrypted=False,compression_block_size=0,callback=lambda name, files: None,
-		 encoding='utf-8'):
+def _pack_callback(name: str, files: List[str]) -> None:
+	pass
+
+def pack(stream, files_or_dirs:List[str], mount_point:str, version:int=3, compression_method:int=COMPR_NONE,
+		 encrypted:bool=False, compression_block_size:int=0, callback=_pack_callback,
+		 encoding: str='utf-8'):
 	if version == 1:
 		write_record = write_record_v1
 
@@ -1220,6 +1228,7 @@ if HAS_LLFUSE:
 
 	class Operations(llfuse.Operations):
 		__slots__ = 'archive','root','inodes','arch_st','data'
+		inodes: Dict[int, Entry]
 
 		def __init__(self, archive, pak):
 			llfuse.Operations.__init__(self)
@@ -1281,7 +1290,11 @@ if HAS_LLFUSE:
 					entry = self.inodes[parent_inode].parent
 
 				else:
-					entry = self.inodes[parent_inode].children[name]
+					entry = self.inodes[parent_inode]
+					if not isinstance(entry, Dir):
+						raise llfuse.FUSEError(errno.ENOTDIR)
+
+					entry = entry.children[name]
 
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
@@ -1344,8 +1357,8 @@ if HAS_LLFUSE:
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
 			else:
-				if type(entry) is Dir:
-					raise llfuse.FUSEError(llfuse.ENOATTR)
+				if not isinstance(entry, File):
+					raise llfuse.FUSEError(llfuse.ENODATA)
 
 				if name == 'user.u4pak.sha1':
 					return hexlify(entry.record.sha1)
@@ -1363,7 +1376,7 @@ if HAS_LLFUSE:
 					return str(entry.record.encrypted).encode('ascii')
 
 				else:
-					raise llfuse.FUSEError(llfuse.ENOATTR)
+					raise llfuse.FUSEError(llfuse.ENODATA)
 
 		def listxattr(self, inode, ctx):
 			try:
@@ -1405,7 +1418,7 @@ if HAS_LLFUSE:
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
 			else:
-				if type(entry) is not Dir:
+				if not isinstance(entry, Dir):
 					raise llfuse.FUSEError(errno.ENOTDIR)
 
 				names = list(entry.children)[offset:] if offset > 0 else entry.children
@@ -1452,7 +1465,7 @@ if HAS_LLFUSE:
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
 
-			if type(entry) is Dir:
+			if not isinstance(entry, File):
 				raise llfuse.FUSEError(errno.EISDIR)
 
 			try:
@@ -1594,7 +1607,7 @@ def main(argv):
 	elif args.command == 'test':
 		state = {'error_count': 0}
 
-		def callback(ctx, message):
+		def check_callback(ctx: Optional[Entry], message: str) -> None:
 			state['error_count'] += 1
 
 			if ctx is None:
@@ -1608,7 +1621,7 @@ def main(argv):
 
 		with open(args.archive,"rb") as stream:
 			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
-			pak.check_integrity(stream,callback,args.ignore_null_checksums)
+			pak.check_integrity(stream, check_callback, args.ignore_null_checksums)
 
 		if state['error_count'] == 0:
 			sys.stdout.write('All ok%s' % delim)
@@ -1618,42 +1631,47 @@ def main(argv):
 
 	elif args.command == 'unpack':
 		if args.verbose:
-			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
+			def unpack_callback(name: str) -> None:
+				sys.stdout.write("%s%s" % (name, delim))
+
 		elif args.progress:
 			nDecompOffset = 0
-			def callback(name):
+			def unpack_callback(name: str) -> None:
 				nonlocal nDecompOffset
 				nDecompOffset = nDecompOffset + 1
 				if nDecompOffset % 10 == 0:
 					print("Decompressing %3.02f%%" % (round(nDecompOffset/len(pak)*100,2)), end="\r")
 		else:
-			callback = lambda name: None
+			def unpack_callback(name: str) -> None:
+				pass
 
 		with open(args.archive,"rb") as stream:
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			if args.files:
-				pak.unpack_only(stream,set(name.strip(os.path.sep) for name in args.files),args.dir,callback)
+				pak.unpack_only(stream, set(name.strip(os.path.sep) for name in args.files), args.dir, unpack_callback)
 			else:
-				pak.unpack(stream,args.dir,callback)
+				pak.unpack(stream, args.dir, unpack_callback)
 
 	elif args.command == 'pack':
 		if args.verbose:
-			callback = lambda name: sys.stdout.write("%s%s" % (name, delim))
+			def pack_callback(name: str, files: List[str]) -> None:
+				sys.stdout.write("%s%s" % (name, delim))
 		elif args.progress:
 			nCompOffset = 0
-			def callback(name, files):
+			def pack_callback(name: str, files: List[str]) -> None:
 				nonlocal nCompOffset
 				nCompOffset = nCompOffset + 1
 				print("Compressing %3.02f%%" % (round(nCompOffset/len(files)*100,2)), end="\r")
 		else:
-			callback = lambda name, files: None
+			def pack_callback(name: str, files: List[str]) -> None:
+				pass
 
 		compFmt = COMPR_NONE
 		if args.zlib == True: compFmt = COMPR_ZLIB
 
 		with open(args.archive,"wb") as stream:
 			pack(stream, args.files, args.mount_point, args.archive_version, compFmt,
-			     callback=callback, encoding=args.encoding)
+			     callback=pack_callback, encoding=args.encoding)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:

@@ -218,6 +218,9 @@ class Pak(object):
 		elif self.version == 4:
 			read_record = read_record_v4
 
+		elif self.version == 7:
+			read_record = read_record_v7
+
 		def check_data(ctx, offset, size, sha1):
 			if ignore_null_checksums and sha1 == b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00':
 				return
@@ -586,6 +589,8 @@ def read_record_v4(stream, filename):
 	return RecordV4(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
 
+read_record_v7 = read_record_v3
+
 def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
@@ -784,6 +789,9 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 
 	elif version == 4:
 		read_record = read_record_v4
+
+	elif version == 7:
+		read_record = read_record_v7
 
 	else:
 		raise ValueError('unsupported version: %d' % version)
@@ -1358,25 +1366,25 @@ if HAS_LLFUSE:
 				raise llfuse.FUSEError(errno.ENOENT)
 			else:
 				if not isinstance(entry, File):
-					raise llfuse.FUSEError(llfuse.ENODATA)
+					raise llfuse.FUSEError(errno.ENODATA)
 
-				if name == 'user.u4pak.sha1':
+				if name == b'user.u4pak.sha1':
 					return hexlify(entry.record.sha1)
 
-				elif name == 'user.u4pak.compressed_size':
+				elif name == b'user.u4pak.compressed_size':
 					return str(entry.record.compressed_size).encode('ascii')
 
-				elif name == 'user.u4pak.compression_method':
+				elif name == b'user.u4pak.compression_method':
 					return COMPR_METHOD_NAMES[entry.record.compression_method].encode('ascii')
 
-				elif name == 'user.u4pak.compression_block_size':
+				elif name == b'user.u4pak.compression_block_size':
 					return str(entry.record.compression_block_size).encode('ascii')
 
-				elif name == 'user.u4pak.encrypted':
+				elif name == b'user.u4pak.encrypted':
 					return str(entry.record.encrypted).encode('ascii')
 
 				else:
-					raise llfuse.FUSEError(llfuse.ENODATA)
+					raise llfuse.FUSEError(errno.ENODATA)
 
 		def listxattr(self, inode, ctx):
 			try:
@@ -1388,9 +1396,9 @@ if HAS_LLFUSE:
 					return []
 
 				else:
-					return ['user.u4pak.sha1', 'user.u4pak.compressed_size',
-							'user.u4pak.compression_method', 'user.u4pak.compression_block_size',
-							'user.u4pak.encrypted']
+					return [b'user.u4pak.sha1', b'user.u4pak.compressed_size',
+							b'user.u4pak.compression_method', b'user.u4pak.compression_block_size',
+							b'user.u4pak.encrypted']
 
 		def access(self, inode, mode, ctx):
 			try:
@@ -1571,7 +1579,7 @@ def main(argv):
 	add_hack_args(info_parser)
 
 	check_parser = subparsers.add_parser('test',aliases=('t',),help='test archive integrity')
-	check_parser.set_defaults(command='test')
+	check_parser.set_defaults(command='test',ignore_null_checksums=False)
 	add_print0_arg(check_parser)
 	add_archive_arg(check_parser)
 	add_hack_args(check_parser)

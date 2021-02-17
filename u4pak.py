@@ -440,7 +440,7 @@ class Record(NamedTuple):
 			for block in self.compression_blocks:
 				block_offset = block[0]
 				block_size = block[1] - block[0]
-				infile.seek(block_offset)
+				infile.seek(self.offset + block_offset)
 				block_content = infile.read(block_size)
 				block_decompress = zlib.decompress(block_content)
 				outfile.write(block_decompress)

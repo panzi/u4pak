@@ -21,22 +21,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from __future__ import with_statement, division, print_function
+from __future__ import annotations, with_statement, division, print_function
 
 import os
+import io
 import sys
 import hashlib
 import zlib
 import math
+import argparse
 
 from struct import unpack as st_unpack, pack as st_pack
 from collections import OrderedDict
 from io import DEFAULT_BUFFER_SIZE
 from binascii import hexlify
-from typing import NamedTuple, Optional, Tuple, List, Dict
+from typing import NamedTuple, Optional, Tuple, List, Dict, Set, Iterable, Iterator, Callable, IO, Any, Union
 
 try:
-	import llfuse
+	import llfuse # type: ignore
 except ImportError:
 	HAS_LLFUSE = False
 else:
@@ -47,31 +49,31 @@ HAS_STAT_NS = hasattr(os.stat_result, 'st_atime_ns')
 __all__ = 'read_index', 'pack'
 
 # for Python < 3.3 and Windows
-def highlevel_sendfile(outfile,infile,offset,size):
+def highlevel_sendfile(outfile: io.BufferedWriter, infile: io.BufferedReader, offset: int, size: int) -> None:
 	infile.seek(offset,0)
 	buf_size = DEFAULT_BUFFER_SIZE
 	buf = bytearray(buf_size)
 	while size > 0:
 		if size >= buf_size:
-			n = infile.readinto(buf)
+			n = infile.readinto(buf) or 0
 			if n < buf_size:
 				raise IOError("unexpected end of file")
 			outfile.write(buf)
 			size -= buf_size
 		else:
-			data = infile.read(size)
+			data = infile.read(size) or b''
 			if len(data) < size:
 				raise IOError("unexpected end of file")
 			outfile.write(data)
 			size = 0
 
 if hasattr(os, 'sendfile'):
-	def sendfile(outfile,infile,offset,size):
+	def sendfile(outfile: io.BufferedWriter, infile: io.BufferedReader, offset: int, size: int) -> None:
 		try:
 			out_fd = outfile.fileno()
 			in_fd  = infile.fileno()
 		except:
-			highlevel_sendfile(outfile,infile,offset,size)
+			highlevel_sendfile(outfile, infile, offset, size)
 		else:
 			# size == 0 has special meaning for some sendfile implentations
 			if size > 0:
@@ -79,7 +81,7 @@ if hasattr(os, 'sendfile'):
 else:
 	sendfile = highlevel_sendfile
 
-def raise_check_error(ctx, message):
+def raise_check_error(ctx: Optional[Record], message: str) -> None:
 	if ctx is None:
 		raise ValueError(message)
 
@@ -90,9 +92,12 @@ def raise_check_error(ctx, message):
 		raise ValueError("%s: %s" % (ctx, message))
 
 class FragInfo(object):
-	__slots__ = ('__frags','__size')
+	__slots__ = '__frags', '__size'
 
-	def __init__(self,size,frags=None):
+	__size: int
+	__frags: List[Tuple[int, int]]
+
+	def __init__(self, size: int, frags: Optional[List[Tuple[int, int]]] = None) -> None:
 		self.__size  = size
 		self.__frags = []
 		if frags:
@@ -100,19 +105,19 @@ class FragInfo(object):
 				self.add(start, end)
 
 	@property
-	def size(self):
+	def size(self) -> int:
 		return self.__size
 
-	def __iter__(self):
+	def __iter__(self) -> Iterator[Tuple[int, int]]:
 		return iter(self.__frags)
 
-	def __len__(self):
+	def __len__(self) -> int:
 		return len(self.__frags)
 
-	def __repr__(self):
+	def __repr__(self) -> str:
 		return 'FragInfo(%r,%r)' % (self.__size, self.__frags)
 
-	def add(self,new_start,new_end):
+	def add(self, new_start: int, new_end: int) -> None:
 		if new_start >= new_end:
 			return
 
@@ -153,7 +158,7 @@ class FragInfo(object):
 
 		frags.append((new_start, new_end))
 
-	def invert(self):
+	def invert(self) -> FragInfo:
 		inverted = FragInfo(self.__size)
 		append   = inverted.__frags.append
 		prev_end = 0
@@ -168,7 +173,7 @@ class FragInfo(object):
 
 		return inverted
 
-	def free(self):
+	def free(self) -> int:
 		free     = 0
 		prev_end = 0
 
@@ -183,7 +188,15 @@ class FragInfo(object):
 class Pak(object):
 	__slots__ = ('version', 'index_offset', 'index_size', 'footer_offset', 'index_sha1', 'mount_point', 'records')
 
-	def __init__(self,version,index_offset,index_size,footer_offset,index_sha1,mount_point=None,records=None):
+	version: int
+	index_offset: int
+	index_size: int
+	footer_offset: int
+	index_sha1: bytes
+	mount_point: Optional[str]
+	records: List[Record]
+
+	def __init__(self, version: int, index_offset: int, index_size: int, footer_offset: int, index_sha1: bytes, mount_point: Optional[str] = None, records: Optional[List[Record]] = None) -> None:
 		self.version       = version
 		self.index_offset  = index_offset
 		self.index_size    = index_size
@@ -192,20 +205,21 @@ class Pak(object):
 		self.mount_point   = mount_point
 		self.records       = records or []
 
-	def __len__(self):
+	def __len__(self) -> int:
 		return len(self.records)
 
-	def __iter__(self):
+	def __iter__(self) -> Iterator[Record]:
 		return iter(self.records)
 
-	def __repr__(self):
+	def __repr__(self) -> str:
 		return 'Pak(version=%r, index_offset=%r, index_size=%r, footer_offset=%r, index_sha1=%r, mount_point=%r, records=%r)' % (
 			self.version, self.index_offset, self.index_size, self.footer_offset, self.index_sha1, self.mount_point, self.records)
 
-	def check_integrity(self,stream,callback=raise_check_error,ignore_null_checksums=False):
+	def check_integrity(self, stream: io.BufferedReader, callback: Callable[[Optional[Record], str], None] = raise_check_error, ignore_null_checksums: bool = False) -> None:
 		index_offset = self.index_offset
 		buf = bytearray(DEFAULT_BUFFER_SIZE)
 
+		read_record: Callable[[io.BufferedReader, str], Record]
 		if self.version == 1:
 			read_record = read_record_v1
 
@@ -234,6 +248,7 @@ class Pak(object):
 					hasher.update(buf)
 				else:
 					rest = stream.read(size)
+					assert rest is not None
 					hasher.update(rest)
 					size = 0
 
@@ -267,23 +282,23 @@ class Pak(object):
 						 (r1.compressed_size, r1.uncompressed_size))
 
 			if r1.data_offset + r1.compressed_size > index_offset:
-				callback('data bleeds into index')
+				callback(None, 'data bleeds into index')
 
 			# test file sha1 sum
 			# XXX: I don't know if the sha1 is of the comressed (and encrypted) data
 			#      or if it would need to uncompress (and decrypt) the data first.
 			check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
 
-	def unpack(self,stream,outdir=".",callback=lambda name: None):
+	def unpack(self, stream: io.BufferedReader, outdir: str=".", callback: Callable[[str], None] = lambda name: None) -> None:
 		for record in self:
-			record.unpack(stream,outdir,callback)
+			record.unpack(stream, outdir, callback)
 
-	def unpack_only(self,stream,files,outdir=".",callback=lambda name: None):
+	def unpack_only(self, stream: io.BufferedReader, files: Iterable[str], outdir: str = ".", callback: Callable[[str], None] = lambda name: None) -> None:
 		for record in self:
-			if shall_unpack(files,record.filename):
-				record.unpack(stream,outdir,callback)
+			if shall_unpack(files, record.filename):
+				record.unpack(stream, outdir, callback)
 
-	def frag_info(self):
+	def frag_info(self) -> FragInfo:
 		frags = FragInfo(self.footer_offset + 44)
 		frags.add(self.index_offset, self.index_offset + self.index_size)
 		frags.add(self.footer_offset, frags.size)
@@ -293,13 +308,14 @@ class Pak(object):
 
 		return frags
 
-	def print_list(self,details=False,human=False,delim="\n",sort_key_func=None,out=sys.stdout):
+	def print_list(self, details: bool = False, human: bool = False, delim: str = "\n", sort_key_func: Optional[Callable[[Record], Any]] = None, out: IO[str] = sys.stdout) -> None:
 		records = self.records
 
 		if sort_key_func:
-			records = sorted(records,key=sort_key_func)
+			records = sorted(records, key=sort_key_func)
 
 		if details:
+			size_to_str: Callable[[int], str]
 			if human:
 				size_to_str = human_size
 			else:
@@ -328,7 +344,8 @@ class Pak(object):
 			for record in records:
 				out.write("%s%s" % (record.filename, delim))
 
-	def print_info(self,human=False,out=sys.stdout):
+	def print_info(self, human: bool = False, out: IO[str] = sys.stdout) -> None:
+		size_to_str: Callable[[int], str]
 		if human:
 			size_to_str = human_size
 		else:
@@ -356,9 +373,9 @@ class Pak(object):
 		for start, end in frags:
 			out.write("\t%10s ... %10s (%10s)\n" % (start, end, size_to_str(end - start)))
 
-	def mount(self,stream,mountpt,foreground=False,debug=False):
+	def mount(self, stream: io.BufferedReader, mountpt: str, foreground: bool = False, debug: bool = False) -> None:
 		mountpt = os.path.abspath(mountpt)
-		ops     = Operations(stream,self)
+		ops     = Operations(stream, self)
 		args    = ['fsname=u4pak', 'subtype=u4pak', 'ro']
 
 		if debug:
@@ -375,7 +392,7 @@ class Pak(object):
 			llfuse.close()
 
 # compare all metadata except for the filename
-def same_metadata(r1,r2):
+def same_metadata(r1: Record, r2: Record) -> bool:
 	# data records always have offset == 0 it seems, so skip that
 	return \
 		r1.compressed_size        == r2.compressed_size    and \
@@ -387,7 +404,7 @@ def same_metadata(r1,r2):
 		r1.encrypted              == r2.encrypted          and \
 		r1.compression_block_size == r2.compression_block_size
 
-def metadata_diff(r1,r2):
+def metadata_diff(r1: Record, r2: Record) -> str:
 	diff = []
 
 	for attr in ['compressed_size', 'uncompressed_size', 'timestamp', 'encrypted', 'compression_block_size']:
@@ -409,9 +426,9 @@ COMPR_ZLIB        = 0x01
 COMPR_BIAS_MEMORY = 0x10
 COMPR_BIAS_SPEED  = 0x20
 
-COMPR_METHODS = {COMPR_NONE, COMPR_ZLIB, COMPR_BIAS_MEMORY, COMPR_BIAS_SPEED}
+COMPR_METHODS: Set[int] = {COMPR_NONE, COMPR_ZLIB, COMPR_BIAS_MEMORY, COMPR_BIAS_SPEED}
 
-COMPR_METHOD_NAMES = {
+COMPR_METHOD_NAMES: Dict[int, str] = {
 	COMPR_NONE: 'none',
 	COMPR_ZLIB: 'zlib',
 	COMPR_BIAS_MEMORY: 'bias memory',
@@ -430,7 +447,7 @@ class Record(NamedTuple):
 	encrypted:              bool
 	compression_block_size: Optional[int]
 
-	def sendfile(self,outfile,infile):
+	def sendfile(self, outfile: io.BufferedWriter, infile: io.BufferedReader) -> None:
 		if self.compression_method == COMPR_NONE:
 			sendfile(outfile, infile, self.data_offset, self.uncompressed_size)
 		elif self.compression_method == COMPR_ZLIB:
@@ -442,12 +459,13 @@ class Record(NamedTuple):
 				block_size = end_offset - start_offset
 				infile.seek(base_offset + start_offset)
 				block_content = infile.read(block_size)
+				assert block_content is not None
 				block_decompress = zlib.decompress(block_content)
 				outfile.write(block_decompress)
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
 
-	def read(self,data,offset: int, size: int):
+	def read(self, data: Union[memoryview, bytes, mmap.mmap], offset: int, size: int) -> bytes:
 		if self.compression_method == COMPR_NONE:
 			uncompressed_size = self.uncompressed_size
 
@@ -486,46 +504,51 @@ class Record(NamedTuple):
 				current_offset = next_offset
 			return b''.join(buf)
 		else:
-			raise NotImplementedError('decompression is not implemented yet')
+			raise NotImplementedError(f'decompression method {self.compression_method} is not implemented yet')
 
-	def unpack(self,stream,outdir=".",callback=lambda name: None):
+	def unpack(self, stream: io.BufferedReader, outdir: str = ".", callback: Callable[[str], None] = lambda name: None) -> None:
 		prefix, name = os.path.split(self.filename)
 		prefix = os.path.join(outdir,prefix)
 		if not os.path.exists(prefix):
 			os.makedirs(prefix)
 		name = os.path.join(prefix,name)
 		callback(name)
-		with open(name,"wb") as fp:
-			self.sendfile(fp,stream)
+		fp: io.BufferedWriter
+		with open(name, "wb") as fp: # type: ignore
+			self.sendfile(fp, stream)
 
 	@property
-	def data_offset(self):
+	def data_offset(self) -> int:
 		return self.offset + self.header_size
 
 	@property
-	def alloc_size(self):
+	def alloc_size(self) -> int:
 		return self.header_size + self.compressed_size
 
 	@property
-	def index_size(self):
+	def index_size(self) -> int:
 		name_size = 4 + len(self.filename.replace(os.path.sep,'/').encode('utf-8')) + 1
 		return name_size + self.header_size
 
 	@property
-	def header_size(self):
+	def header_size(self) -> int:
 		raise NotImplementedError
 
 class RecordV1(Record):
-	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, timestamp, sha1):
+	__slots__ = ()
+
+	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, timestamp: Optional[int], sha1: bytes) -> RecordV1:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 							  compression_method, timestamp, sha1, None, False, None)
 
 	@property
-	def header_size(self):
+	def header_size(self) -> int:
 		return 56
 
 class RecordV2(Record):
-	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1):
+	__slots__ = ()
+
+	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, sha1: bytes) -> RecordV2:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 							  compression_method, None, sha1, None, False, None)
 
@@ -534,14 +557,16 @@ class RecordV2(Record):
 		return 48
 
 class RecordV3(Record):
-	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
-				compression_blocks, encrypted, compression_block_size):
+	__slots__ = ()
+
+	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, sha1: bytes,
+				compression_blocks: Optional[List[Tuple[int, int]]], encrypted: bool, compression_block_size: Optional[int]) -> RecordV3:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 							  compression_method, None, sha1, compression_blocks, encrypted,
 							  compression_block_size)
 
 	@property
-	def header_size(self):
+	def header_size(self) -> int:
 		size = 53
 		if self.compression_method != COMPR_NONE:
 			assert self.compression_blocks is not None
@@ -549,8 +574,10 @@ class RecordV3(Record):
 		return size
 
 class RecordV4(Record):
-	def __new__(cls, filename, offset, compressed_size, uncompressed_size, compression_method, sha1,
-				compression_blocks, encrypted, compression_block_size):
+	__slots__ = ()
+
+	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, sha1: bytes,
+				compression_blocks: Optional[List[Tuple[int, int]]], encrypted: bool, compression_block_size: Optional[int]):
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 							  compression_method, None, sha1, compression_blocks, encrypted,
 							  compression_block_size)
@@ -563,26 +590,26 @@ class RecordV4(Record):
 			size += len(self.compression_blocks) * 16
 		return size
 
-def read_path(stream,encoding='utf-8'):
+def read_path(stream: io.BufferedReader, encoding: str = 'utf-8') -> str:
 	path_len, = st_unpack('<I',stream.read(4))
 	return stream.read(path_len).rstrip(b'\0').decode(encoding).replace('/',os.path.sep)
 
-def pack_path(path,encoding='utf-8'):
-	path = path.replace(os.path.sep,'/').encode('utf-8') + b'\0'
-	return st_pack('<I', len(path)) + path
+def pack_path(path: str, encoding: str = 'utf-8') -> bytes:
+	encoded_path = path.replace(os.path.sep, '/').encode('utf-8') + b'\0'
+	return st_pack('<I', len(path)) + encoded_path
 
-def write_path(stream,path,encoding='utf-8'):
+def write_path(stream: io.BufferedWriter, path: str, encoding: str = 'utf-8') -> bytes:
 	data = pack_path(path,encoding)
 	stream.write(data)
 	return data
 
-def read_record_v1(stream, filename):
+def read_record_v1(stream: io.BufferedReader, filename: str) -> RecordV1:
 	return RecordV1(filename, *st_unpack('<QQQIQ20s',stream.read(56)))
 
-def read_record_v2(stream, filename):
+def read_record_v2(stream: io.BufferedReader, filename: str) -> RecordV2:
 	return RecordV2(filename, *st_unpack('<QQQI20s',stream.read(48)))
 
-def read_record_v3(stream, filename):
+def read_record_v3(stream: io.BufferedReader, filename: str) -> RecordV3:
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
 		st_unpack('<QQQI20s',stream.read(48))
 
@@ -599,7 +626,7 @@ def read_record_v3(stream, filename):
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
 
-def read_record_v4(stream, filename):
+def read_record_v4(stream: IO[bytes], filename: str) -> RecordV4:
 	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
 		st_unpack('<QQQI20s', stream.read(48))
 
@@ -619,7 +646,14 @@ def read_record_v4(stream, filename):
 
 read_record_v7 = read_record_v3
 
-def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+def write_data(
+		archive: io.BufferedWriter,
+		fh: io.BufferedReader,
+		size: int,
+		compression_method: int = COMPR_NONE,
+		encrypted: bool = False,
+		compression_block_size: int = 0
+) -> Tuple[int, bytes]:
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
@@ -631,23 +665,33 @@ def write_data(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,com
 	bytes_left = size
 	hasher = hashlib.sha1()
 	while bytes_left > 0:
+		data: Union[bytes, bytearray]
 		if bytes_left >= buf_size:
 			n = fh.readinto(buf)
 			data = buf
-			if n < buf_size:
+			if n is None or n < buf_size:
 				raise IOError('unexpected end of file')
 		else:
-			data = fh.read(bytes_left)
+			opt_data = fh.read(bytes_left)
+			assert opt_data is not None
 			n = len(data)
 			if n < bytes_left:
 				raise IOError('unexpected end of file')
+			data = opt_data
 		bytes_left -= n
 		hasher.update(data)
 		archive.write(data)
 
 	return size, hasher.digest()
 
-def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=False,compression_block_size=65536):
+def write_data_zlib(
+		archive: io.BufferedWriter,
+		fh: io.BufferedReader,
+		size: int,
+		compression_method: int = COMPR_NONE,
+		encrypted: bool = False,
+		compression_block_size: int = 65536
+) -> Tuple[int, bytes, int, List[int]]:
 	if encrypted:
 		raise NotImplementedError("encryption is not implemented")
 
@@ -660,7 +704,7 @@ def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=Fals
 	# Seek Skip Offset
 	archive.seek(block_count * 8 * 2, 1)
 
-	record = st_pack('<BI',int(encrypted),compression_block_size)
+	record = st_pack('<BI', int(encrypted), compression_block_size)
 	archive.write(record)
 
 	cur_offset = base_offset + 4 + block_count * 8 * 2 + 5
@@ -670,11 +714,12 @@ def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=Fals
 	compress_block_no = 0
 
 	buf = bytearray(buf_size)
-	bytes_left = size
+	bytes_left: int = size
 	hasher = hashlib.sha1()
 	while bytes_left > 0:
+		n: int
 		if bytes_left >= buf_size:
-			n = fh.readinto(buf)
+			n = fh.readinto(buf) or 0
 			data = zlib.compress(memoryview(buf))
 
 			compressed_size += len(data)
@@ -686,7 +731,7 @@ def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=Fals
 			if n < buf_size:
 				raise IOError('unexpected end of file')
 		else:
-			data = fh.read(bytes_left)
+			data = fh.read(bytes_left) or b''
 			n = len(data)
 
 			data = zlib.compress(data)
@@ -710,7 +755,12 @@ def write_data_zlib(archive,fh,size,compression_method=COMPR_NONE,encrypted=Fals
 
 	return compressed_size, hasher.digest(), block_count, compress_blocks
 
-def write_record_v1(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+def write_record_v1(
+		archive: io.BufferedWriter,
+		fh: io.BufferedReader,
+		compression_method: int = COMPR_NONE,
+		encrypted: bool = False,
+		compression_block_size: int = 0) -> bytes:
 	if encrypted:
 		raise ValueError('version 1 does not support encryption')
 
@@ -735,7 +785,12 @@ def write_record_v1(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 
 	return st_pack('<QQQIQ20s',record_offset,compressed_size,size,compression_method,int(st.st_mtime),sha1)
 
-def write_record_v2(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+def write_record_v2(
+		archive: io.BufferedWriter,
+		fh: io.BufferedReader,
+		compression_method: int = COMPR_NONE,
+		encrypted: bool = False,
+		compression_block_size: int = 0) -> bytes:
 	if encrypted:
 		raise ValueError('version 2 does not support encryption')
 
@@ -759,7 +814,12 @@ def write_record_v2(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 
 	return st_pack('<QQQI20s',record_offset,compressed_size,size,compression_method,sha1)
 
-def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,compression_block_size=0):
+def write_record_v3(
+		archive: io.BufferedWriter,
+		fh: io.BufferedReader,
+		compression_method: int = COMPR_NONE,
+		encrypted: bool = False,
+		compression_block_size: int = 0) -> bytes:
 	if compression_method != COMPR_NONE and compression_method != COMPR_ZLIB:
 		raise NotImplementedError("compression is not implemented")
 
@@ -794,7 +854,13 @@ def write_record_v3(archive,fh,compression_method=COMPR_NONE,encrypted=False,com
 	else:
 		return st_pack('<QQQI20sBI',record_offset,compressed_size,size,compression_method,sha1,int(encrypted),compression_block_size)
 
-def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',force_version=None,ignore_null_checksums=False):
+def read_index(
+		stream: io.BufferedReader,
+		check_integrity: bool = False,
+		ignore_magic: bool = False,
+		encoding: str = 'utf-8',
+		force_version: Optional[int] = None,
+		ignore_null_checksums: bool = False) -> Pak:
 	stream.seek(-44, 2)
 	footer_offset = stream.tell()
 	footer = stream.read(44)
@@ -806,6 +872,7 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 	if force_version is not None:
 		version = force_version
 
+	read_record: Callable[[io.BufferedReader, str], Record]
 	if version == 1:
 		read_record = read_record_v1
 
@@ -843,16 +910,16 @@ def read_index(stream,check_integrity=False,ignore_magic=False,encoding='utf-8',
 		raise ValueError('index bleeds into footer')
 
 	if check_integrity:
-		pak.check_integrity(stream,None,ignore_null_checksums)
+		pak.check_integrity(stream, ignore_null_checksums=ignore_null_checksums)
 
 	return pak
 
 def _pack_callback(name: str, files: List[str]) -> None:
 	pass
 
-def pack(stream, files_or_dirs:List[str], mount_point:str, version:int=3, compression_method:int=COMPR_NONE,
-		 encrypted:bool=False, compression_block_size:int=0, callback=_pack_callback,
-		 encoding: str='utf-8'):
+def pack(stream: io.BufferedWriter, files_or_dirs: List[str], mount_point: str, version: int = 3, compression_method: int = COMPR_NONE,
+		 encrypted: bool = False, compression_block_size: int = 0, callback: Callable[[str, List[str]], None] = _pack_callback,
+		 encoding: str='utf-8') -> None:
 	if version == 1:
 		write_record = write_record_v1
 
@@ -865,7 +932,7 @@ def pack(stream, files_or_dirs:List[str], mount_point:str, version:int=3, compre
 	else:
 		raise ValueError('version not supported: %d' % version)
 
-	files = []
+	files: List[str] = []
 	for name in files_or_dirs:
 		if os.path.isdir(name):
 			for dirpath, dirnames, filenames in os.walk(name):
@@ -876,16 +943,17 @@ def pack(stream, files_or_dirs:List[str], mount_point:str, version:int=3, compre
 
 	files.sort()
 
-	records = []
+	records: List[Tuple[str, bytes]] = []
 	for filename in files:
 		callback(filename, files)
-		with open(filename,"rb") as fh:
-			record = write_record(stream,fh,compression_method,encrypted,compression_block_size)
+		fh: io.BufferedReader
+		with open(filename, "rb") as fh: # type: ignore
+			record = write_record(stream, fh, compression_method, encrypted, compression_block_size)
 			records.append((filename, record))
 
 	write_index(stream,version,mount_point,records,encoding)
 
-def write_index(stream,version,mount_point,records,encoding='utf-8'):
+def write_index(stream: IO[bytes], version: int, mount_point: str, records: List[Tuple[str, bytes]], encoding: str = 'utf-8') -> None:
 	hasher = hashlib.sha1()
 	index_offset = stream.tell()
 
@@ -895,10 +963,10 @@ def write_index(stream,version,mount_point,records,encoding='utf-8'):
 	stream.write(index_header)
 
 	for filename, record in records:
-		filename = pack_path(filename, encoding)
-		hasher.update(filename)
-		stream.write(filename)
-		index_size += len(filename)
+		encoded_filename = pack_path(filename, encoding)
+		hasher.update(encoded_filename)
+		stream.write(encoded_filename)
+		index_size += len(encoded_filename)
 
 		hasher.update(record)
 		stream.write(record)
@@ -909,9 +977,9 @@ def write_index(stream,version,mount_point,records,encoding='utf-8'):
 
 # TODO: untested!
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
-def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_NONE,
-		   encrypted=False,compression_block_size=0,callback=lambda name: None,
-		   ignore_magic=False,encoding='utf-8',force_version=None):
+def update(stream: io.BufferedRandom, mount_point: str, insert: Optional[List[str]] = None, remove: Optional[List[str]] = None, compression_method: int = COMPR_NONE,
+		   encrypted: bool = False, compression_block_size: int = 0, callback: Callable[[str], None] = lambda name: None,
+		   ignore_magic: bool = False, encoding: str = 'utf-8', force_version: Optional[int] = None):
 	if compression_method != COMPR_NONE:
 		raise NotImplementedError("compression is not implemented")
 
@@ -920,24 +988,25 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 
 	pak = read_index(stream, False, ignore_magic, encoding, force_version)
 
+	make_record: Callable[[str], Record]
 	if pak.version == 1:
 		write_record = write_record_v1
-		def make_record(filename):
+		def make_record(filename: str) -> RecordV1:
 			st   = os.stat(filename)
 			size = st.st_size
-			return RecordV1(filename, None, size, size, COMPR_NONE, int(st.st_mtime), None)
+			return RecordV1(filename, -1, size, size, COMPR_NONE, int(st.st_mtime), b'')
 
 	elif pak.version == 2:
 		write_record = write_record_v2
-		def make_record(filename):
+		def make_record(filename: str) -> RecordV2:
 			size = os.path.getsize(filename)
-			return RecordV2(filename, None, size, size, COMPR_NONE, None)
+			return RecordV2(filename, -1, size, size, COMPR_NONE, b'')
 
 	elif pak.version == 3:
 		write_record = write_record_v3
-		def make_record(filename):
+		def make_record(filename: str) -> RecordV3:
 			size = os.path.getsize(filename)
-			return RecordV3(filename, None, size, size, COMPR_NONE, None, None, False, 0)
+			return RecordV3(filename, -1, size, size, COMPR_NONE, b'', None, False, 0)
 
 	else:
 		raise ValueError('version not supported: %d' % pak.version)
@@ -951,12 +1020,13 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 
 		parent = root
 		for i, comp in enumerate(path):
+			comp_encoded = comp.encode(encoding)
 			try:
-				entry = parent.children[comp]
+				entry = parent.children[comp_encoded]
 			except KeyError:
-				entry = parent.children[comp] = Dir(-1, parent=parent)
+				entry = parent.children[comp_encoded] = Dir(-1, parent=parent)
 
-			if type(entry) is not Dir:
+			if not isinstance(entry, Dir):
 				raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 			parent = entry
@@ -964,7 +1034,7 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 		if name in parent.children:
 			raise ValueError("doubled name in archive: %s" % record.filename)
 
-		parent.children[name] = File(-1, record, parent)
+		parent.children[name.encode(encoding)] = File(-1, record, parent)
 
 	# find files to remove
 	if remove:
@@ -974,12 +1044,13 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 
 			parent = root
 			for i, comp in enumerate(path):
+				comp_encoded = comp.encode(encoding)
 				try:
-					entry = parent.children[comp]
+					entry = parent.children[comp_encoded]
 				except KeyError:
-					entry = parent.children[comp] = Dir(-1, parent=parent)
+					entry = parent.children[comp_encoded] = Dir(-1, parent=parent)
 
-				if type(entry) is not Dir:
+				if not isinstance(entry, Dir):
 					# TODO: maybe option to ignore this?
 					raise ValueError("file not in archive: %s" % filename)
 
@@ -988,8 +1059,9 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 			if name not in parent.children:
 				raise ValueError("file not in archive: %s" % filename)
 
-			entry = parent.children[name]
-			del parent.children[name]
+			name_encoded = name.encode(encoding)
+			entry = parent.children[name_encoded]
+			del parent.children[name_encoded]
 
 	# find files to insert
 	if insert:
@@ -1008,12 +1080,13 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 
 			parent = root
 			for i, comp in enumerate(path):
+				comp_encoded = comp.encode(encoding)
 				try:
-					entry = parent.children[comp]
+					entry = parent.children[comp_encoded]
 				except KeyError:
-					entry = parent.children[comp] = Dir(-1, parent=parent)
+					entry = parent.children[comp_encoded] = Dir(-1, parent=parent)
 
-				if type(entry) is not Dir:
+				if not isinstance(entry, Dir):
 					raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 				parent = entry
@@ -1021,14 +1094,14 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 			if name in parent.children:
 				raise ValueError("doubled name in archive: %s" % filename)
 
-			parent.children[name] = File(-1, make_record(filename), parent)
+			parent.children[name.encode(encoding)] = File(-1, make_record(filename), parent)
 
 	# build new allocations
-	existing_records = []
-	new_records      = []
+	existing_records: List[Record] = []
+	new_records:      List[Record] = []
 
 	for record in root.allrecords():
-		if record.offset is None:
+		if record.offset == -1:
 			new_records.append(record)
 		else:
 			existing_records.append(record)
@@ -1082,16 +1155,17 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 
 	index_records = []
 	for offset, record in reversed(allocations):
-		if record.offset is None:
+		if record.offset == -1:
 			# new record
 			filename = record.filename
-			callback("+"+filename)
-			with open(filename,"rb") as fh:
-				record_bytes = write_record(stream,fh,record.compression_method,record.encrypted,record.compression_block_size)
+			callback("+" + filename)
+			fh: io.BufferedReader
+			with open(filename, "rb") as fh: # type: ignore
+				record_bytes = write_record(stream, fh, record.compression_method, record.encrypted, record.compression_block_size or 0)
 		elif offset != record.offset:
 			assert offset > record.offset
 			callback(" "+filename)
-			fshift(stream,record.offset,offset,record.alloc_size)
+			fshift(stream, record.offset, offset, record.alloc_size)
 			stream.seek(offset, 0)
 			record_bytes = stream.read(record.header_size)
 		index_records.append((filename, record_bytes))
@@ -1101,12 +1175,13 @@ def update(stream,mount_point,insert=None,remove=None,compression_method=COMPR_N
 	if diff_size < 0:
 		stream.truncate(arch_size)
 
-def fshift(stream,src,dst,size):
+def fshift(stream: io.BufferedRandom, src: int, dst: int, size: int) -> None:
 	assert src < dst
 	buf_size = DEFAULT_BUFFER_SIZE
 	buf      = bytearray(buf_size)
 
 	while size > 0:
+		data: Union[bytes, bytearray]
 		if size >= buf_size:
 			stream.seek(src + size - buf_size, 0)
 			stream.readinto(buf)
@@ -1114,62 +1189,62 @@ def fshift(stream,src,dst,size):
 			size -= buf_size
 		else:
 			stream.seek(src, 0)
-			data = stream.read(size)
+			data = stream.read(size) or b''
 			size = 0
 
 		stream.seek(dst + size, 0)
 		stream.write(data)
 
-def shall_unpack(paths,name):
+def shall_unpack(paths: Iterable[str], name: str) -> bool:
 	path = name.split(os.path.sep)
-	for i in range(1,len(path)+1):
+	for i in range(1, len(path) + 1):
 		prefix = os.path.join(*path[0:i])
 		if prefix in paths:
 			return True
 	return False
 
-def human_size(size):
+def human_size(size: int) -> str:
 	if size < 2 ** 10:
 		return str(size)
 
 	elif size < 2 ** 20:
-		size = "%.1f" % (size / 2 ** 10)
+		str_size = "%.1f" % (size / 2 ** 10)
 		unit = "K"
 
 	elif size < 2 ** 30:
-		size = "%.1f" % (size / 2 ** 20)
+		str_size = "%.1f" % (size / 2 ** 20)
 		unit = "M"
 
 	elif size < 2 ** 40:
-		size = "%.1f" % (size / 2 ** 30)
+		str_size = "%.1f" % (size / 2 ** 30)
 		unit = "G"
 
 	elif size < 2 ** 50:
-		size = "%.1f" % (size / 2 ** 40)
+		str_size = "%.1f" % (size / 2 ** 40)
 		unit = "T"
 
 	elif size < 2 ** 60:
-		size = "%.1f" % (size / 2 ** 50)
+		str_size = "%.1f" % (size / 2 ** 50)
 		unit = "P"
 
 	elif size < 2 ** 70:
-		size = "%.1f" % (size / 2 ** 60)
+		str_size = "%.1f" % (size / 2 ** 60)
 		unit = "E"
 
 	elif size < 2 ** 80:
-		size = "%.1f" % (size / 2 ** 70)
+		str_size = "%.1f" % (size / 2 ** 70)
 		unit = "Z"
 
 	else:
-		size = "%.1f" % (size / 2 ** 80)
+		str_size = "%.1f" % (size / 2 ** 80)
 		unit = "Y"
 
-	if size.endswith(".0"):
-		size = size[:-2]
+	if str_size.endswith(".0"):
+		str_size = str_size[:-2]
 
-	return size+unit
+	return str_size + unit
 
-SORT_ALIASES = {
+SORT_ALIASES: Dict[str, str] = {
 	"s": "size",
 	"S": "-size",
 	"z": "zsize",
@@ -1179,7 +1254,7 @@ SORT_ALIASES = {
 	"n": "name"
 }
 
-KEY_FUNCS = {
+KEY_FUNCS: Dict[str, Callable[[Record], Union[str, int]]] = {
 	"size":  lambda rec: rec.uncompressed_size,
 	"-size": lambda rec: -rec.uncompressed_size,
 
@@ -1192,7 +1267,7 @@ KEY_FUNCS = {
 	"name": lambda rec: rec.filename.lower(),
 }
 
-def sort_key_func(sort):
+def sort_key_func(sort: str) -> Callable[[Record], Tuple[Union[str, int], ...]]:
 	key_funcs = []
 	for key in sort.split(","):
 		key = SORT_ALIASES.get(key,key)
@@ -1205,25 +1280,31 @@ def sort_key_func(sort):
 	return lambda rec: tuple(key_func(rec) for key_func in key_funcs)
 
 class Entry(object):
-	__slots__ = 'inode','_parent','stat','__weakref__'
+	__slots__ = 'inode', '_parent', 'stat', '__weakref__'
 
-	def __init__(self,inode,parent=None):
+	inode: int
+	_parent: Optional[weakref.ref[Dir]]
+	stat: Optional[os.stat_result]
+
+	def __init__(self, inode: int, parent: Optional[Dir] = None) -> None:
 		self.inode  = inode
 		self.parent = parent
 		self.stat   = None
 
 	@property
-	def parent(self):
+	def parent(self) -> Optional[Dir]:
 		return self._parent() if self._parent is not None else None
 
 	@parent.setter
-	def parent(self,parent):
+	def parent(self, parent: Optional[Dir]) -> None:
 		self._parent = weakref.ref(parent) if parent is not None else None
 
 class Dir(Entry):
 	__slots__ = 'children',
 
-	def __init__(self,inode,children=None,parent=None):
+	children: OrderedDict[bytes, Union[Dir, File]]
+
+	def __init__(self, inode: int, children: Optional[OrderedDict[bytes, Union[Dir, File]]] = None, parent: Optional[Dir] = None) -> None:
 		Entry.__init__(self,inode,parent)
 		if children is None:
 			self.children = OrderedDict()
@@ -1232,12 +1313,12 @@ class Dir(Entry):
 			for child in children.values():
 				child.parent = self
 
-	def __repr__(self):
+	def __repr__(self) -> str:
 		return 'Dir(%r, %r)' % (self.inode, self.children)
 
-	def allrecords(self):
+	def allrecords(self) -> Iterable[Record]:
 		for child in self.children.values():
-			if type(child) is Dir:
+			if isinstance(child, Dir):
 				for record in child.allrecords():
 					yield record
 			else:
@@ -1246,11 +1327,13 @@ class Dir(Entry):
 class File(Entry):
 	__slots__ = 'record',
 
-	def __init__(self,inode,record,parent=None):
-		Entry.__init__(self,inode,parent)
+	record: Record
+
+	def __init__(self, inode: int, record: Record, parent: Optional[Dir] = None) -> None:
+		Entry.__init__(self, inode, parent)
 		self.record = record
 
-	def __repr__(self):
+	def __repr__(self) -> str:
 		return 'File(%r, %r)' % (self.inode, self.record)
 
 if HAS_LLFUSE:
@@ -1263,12 +1346,15 @@ if HAS_LLFUSE:
 	DIR_PARENT = '..'.encode(sys.getfilesystemencoding())
 
 	class Operations(llfuse.Operations):
-		__slots__ = 'archive','root','inodes','arch_st','data'
-		inodes: Dict[int, Entry]
+		__slots__ = 'archive', 'root', 'inodes', 'arch_st', 'data'
+
+		archive: io.BufferedReader
+		inodes: Dict[int, Union[Dir, File]]
 		root: Dir
+		arch_st: os.stat_result
 		data: mmap.mmap
 
-		def __init__(self, archive, pak):
+		def __init__(self, archive: io.BufferedReader, pak: Pak) -> None:
 			llfuse.Operations.__init__(self)
 			self.archive = archive
 			self.arch_st = os.fstat(archive.fileno())
@@ -1286,14 +1372,14 @@ if HAS_LLFUSE:
 
 				parent = self.root
 				for i, comp in enumerate(path):
-					comp = comp.encode(encoding)
+					comp_encoded = comp.encode(encoding)
 					try:
-						entry = parent.children[comp]
+						entry = parent.children[comp_encoded]
 					except KeyError:
-						entry = parent.children[comp] = self.inodes[inode] = Dir(inode, parent=parent)
+						entry = parent.children[comp_encoded] = self.inodes[inode] = Dir(inode, parent=parent)
 						inode += 1
 
-					if type(entry) is not Dir:
+					if not isinstance(entry, Dir):
 						raise ValueError("name conflict in archive: %r is not a directory" % os.path.join(*path[:i+1]))
 
 					parent = entry
@@ -1315,20 +1401,22 @@ if HAS_LLFUSE:
 				entry = self.inodes[inode]
 				entry.stat = self._getattr(entry)
 
-		def destroy(self):
+		def destroy(self) -> None:
 			self.data.close()
 			self.archive.close()
 
-		def lookup(self, parent_inode, name, ctx):
+		def lookup(self, parent_inode: int, name: bytes, ctx) -> os.stat_result:
 			try:
+				entry = self.inodes[parent_inode]
 				if name == DIR_SELF:
-					entry = self.inodes[parent_inode]
+					pass
 
 				elif name == DIR_PARENT:
-					entry = self.inodes[parent_inode].parent
+					parent = entry.parent
+					if parent is not None:
+						entry = parent
 
 				else:
-					entry = self.inodes[parent_inode]
 					if not isinstance(entry, Dir):
 						raise llfuse.FUSEError(errno.ENOTDIR)
 
@@ -1337,9 +1425,11 @@ if HAS_LLFUSE:
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
 			else:
-				return entry.stat
+				stat = entry.stat
+				assert stat is not None
+				return stat
 
-		def _getattr(self, entry):
+		def _getattr(self, entry: Union[Dir, File]) -> llfuse.EntryAttributes:
 			attrs = llfuse.EntryAttributes()
 
 			attrs.st_ino        = entry.inode
@@ -1348,7 +1438,7 @@ if HAS_LLFUSE:
 			attrs.entry_timeout = 300
 			attrs.attr_timeout  = 300
 
-			if type(entry) is Dir:
+			if isinstance(entry, Dir):
 				nlink = 2 if entry is not self.root else 1
 				size  = 5
 
@@ -1381,15 +1471,17 @@ if HAS_LLFUSE:
 
 			return attrs
 
-		def getattr(self, inode, ctx):
+		def getattr(self, inode: int, ctx) -> os.stat_result:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
 				raise llfuse.FUSEError(errno.ENOENT)
 			else:
-				return entry.stat
+				stat = entry.stat
+				assert stat is not None
+				return stat
 
-		def getxattr(self, inode, name, ctx):
+		def getxattr(self, inode: int, name: bytes, ctx) -> bytes:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1416,7 +1508,7 @@ if HAS_LLFUSE:
 				else:
 					raise llfuse.FUSEError(errno.ENODATA)
 
-		def listxattr(self, inode, ctx):
+		def listxattr(self, inode: int, ctx) -> List[bytes]:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1430,7 +1522,7 @@ if HAS_LLFUSE:
 							b'user.u4pak.compression_method', b'user.u4pak.compression_block_size',
 							b'user.u4pak.encrypted']
 
-		def access(self, inode, mode, ctx):
+		def access(self, inode: int, mode: int, ctx) -> bool:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1439,7 +1531,7 @@ if HAS_LLFUSE:
 				st_mode = 0o555 if type(entry) is Dir else 0o444
 				return (st_mode & mode) == mode
 
-		def opendir(self, inode, ctx):
+		def opendir(self, inode: int, ctx):
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1450,7 +1542,7 @@ if HAS_LLFUSE:
 
 				return inode
 
-		def readdir(self, inode, offset):
+		def readdir(self, inode: int, offset: int) -> Iterable[Tuple[bytes, os.stat_result, int]]:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1462,12 +1554,14 @@ if HAS_LLFUSE:
 				names = list(entry.children)[offset:] if offset > 0 else entry.children
 				for name in names:
 					child = entry.children[name]
-					yield name, child.stat, child.inode
+					stat = child.stat
+					assert stat is not None
+					yield name, stat, child.inode
 
-		def releasedir(self, fh):
+		def releasedir(self, fh: int) -> None:
 			pass
 
-		def statfs(self, ctx):
+		def statfs(self, ctx) -> os.stat_result:
 			attrs = llfuse.StatvfsData()
 
 			arch_st = self.arch_st
@@ -1483,7 +1577,7 @@ if HAS_LLFUSE:
 
 			return attrs
 
-		def open(self, inode, flags, ctx):
+		def open(self, inode: int, flags: int, ctx) -> int:
 			try:
 				entry = self.inodes[inode]
 			except KeyError:
@@ -1497,7 +1591,7 @@ if HAS_LLFUSE:
 
 				return inode
 
-		def read(self, fh, offset, length):
+		def read(self, fh: int, offset: int, length: int) -> bytes:
 			try:
 				entry = self.inodes[fh]
 			except KeyError:
@@ -1515,7 +1609,7 @@ if HAS_LLFUSE:
 			pass
 
 # based on http://code.activestate.com/recipes/66012/
-def deamonize(stdout='/dev/null', stderr=None, stdin='/dev/null'):
+def deamonize(stdout: str = '/dev/null', stderr: Optional[str] = None, stdin: str = '/dev/null') -> None:
 	# Do first fork.
 	try:
 		pid = os.fork()
@@ -1559,9 +1653,7 @@ def deamonize(stdout='/dev/null', stderr=None, stdin='/dev/null'):
 	os.dup2(so.fileno(), sys.stdout.fileno())
 	os.dup2(se.fileno(), sys.stderr.fileno())
 
-def main(argv):
-	import argparse
-
+def main(argv: List[str]) -> None:
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
 	parser.set_defaults(print0=False,verbose=False,progress=False,zlib=False,command=None)
 
@@ -1629,23 +1721,26 @@ def main(argv):
 
 	delim = '\0' if args.print0 else '\n'
 
+	stream:  io.BufferedReader
+	wstream: io.BufferedWriter
+
 	if args.command is None:
 		parser.print_help()
 
 	elif args.command == 'list':
-		with open(args.archive,"rb") as stream:
+		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
 
 	elif args.command == 'info':
-		with open(args.archive,"rb") as stream:
+		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
 		state = {'error_count': 0}
 
-		def check_callback(ctx: Optional[Entry], message: str) -> None:
+		def check_callback(ctx: Optional[Record], message: str) -> None:
 			state['error_count'] += 1
 
 			if ctx is None:
@@ -1657,7 +1752,7 @@ def main(argv):
 			else:
 				sys.stdout.write("%s: %s%s" % (ctx, message, delim))
 
-		with open(args.archive,"rb") as stream:
+		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.check_integrity(stream, check_callback, args.ignore_null_checksums)
 
@@ -1683,7 +1778,7 @@ def main(argv):
 			def unpack_callback(name: str) -> None:
 				pass
 
-		with open(args.archive,"rb") as stream:
+		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			if args.files:
 				pak.unpack_only(stream, set(name.strip(os.path.sep) for name in args.files), args.dir, unpack_callback)
@@ -1707,54 +1802,54 @@ def main(argv):
 		compFmt = COMPR_NONE
 		if args.zlib == True: compFmt = COMPR_ZLIB
 
-		with open(args.archive,"wb") as stream:
-			pack(stream, args.files, args.mount_point, args.archive_version, compFmt,
+		with open(args.archive, "wb") as wstream: # type: ignore
+			pack(wstream, args.files, args.mount_point, args.archive_version, compFmt,
 			     callback=pack_callback, encoding=args.encoding)
 
 	elif args.command == 'mount':
 		if not HAS_LLFUSE:
 			raise ValueError('the llfuse python module is needed for this feature')
 
-		with open(args.archive,"rb") as stream:
+		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.mount(stream, args.mountpt, args.foreground, args.debug)
 
 	else:
 		raise ValueError('unknown command: %s' % args.command)
 
-def add_integrity_arg(parser):
+def add_integrity_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('-i','--check-integrity',action='store_true',default=False,
 						help='meta-data sanity check and verify checksums')
 	parser.add_argument('--ignore-null-checksums',action='store_true',default=False,
 						help='ignore checksums that are all nulls')
 
-def add_archive_arg(parser):
+def add_archive_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('archive', help='Unreal Engine 4 .pak archive')
 
-def add_print0_arg(parser):
+def add_print0_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('-0','--print0',action='store_true',default=False,
 						help='seperate file names with nil bytes')
 
-def add_verbose_arg(parser):
+def add_verbose_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('-v','--verbose',action='store_true',default=False,
 						help='print verbose output')
 
-def add_human_arg(parser):
+def add_human_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('-u','--human-readable',dest='human',action='store_true',default=False,
 						help='print human readable file sizes')
 
-def add_encoding_arg(parser):
+def add_encoding_arg(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('--encoding',type=str,default='UTF-8',
 						help='charcter encoding of file names to use (default: UTF-8)')
 
-def add_hack_args(parser):
+def add_hack_args(parser: argparse.ArgumentParser) -> None:
 	add_encoding_arg(parser)
 	parser.add_argument('--ignore-magic',action='store_true',default=False,
 						help="don't error out if file magic missmatches")
 	parser.add_argument('--force-version',type=int,default=None,
 						help='use this format version when parsing the file instead of the version read from the archive')
 
-def add_common_args(parser):
+def add_common_args(parser: argparse.ArgumentParser) -> None:
 	add_print0_arg(parser)
 	add_verbose_arg(parser)
 	add_integrity_arg(parser)

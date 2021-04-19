@@ -674,7 +674,7 @@ def write_data(
 		else:
 			opt_data = fh.read(bytes_left)
 			assert opt_data is not None
-			n = len(data)
+			n = len(opt_data)
 			if n < bytes_left:
 				raise IOError('unexpected end of file')
 			data = opt_data

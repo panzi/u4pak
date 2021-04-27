@@ -269,7 +269,7 @@ class Pak(object):
 
 			# test index metadata
 			if r2.offset != 0:
-				callback(r2, 'data record offset field is no 0 but %d' % r2.offset)
+				callback(r2, 'data record offset field is not 0 but %d' % r2.offset)
 
 			if not same_metadata(r1, r2):
 				callback(r1, 'metadata missmatch:\n%s' % metadata_diff(r1, r2))
@@ -1738,10 +1738,11 @@ def main(argv: List[str]) -> None:
 			pak.print_info(args.human,sys.stdout)
 
 	elif args.command == 'test':
-		state = {'error_count': 0}
+		error_count = 0
 
 		def check_callback(ctx: Optional[Record], message: str) -> None:
-			state['error_count'] += 1
+			nonlocal error_count
+			error_count += 1
 
 			if ctx is None:
 				sys.stdout.write("%s%s" % (message, delim))
@@ -1756,10 +1757,10 @@ def main(argv: List[str]) -> None:
 			pak = read_index(stream, False, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.check_integrity(stream, check_callback, args.ignore_null_checksums)
 
-		if state['error_count'] == 0:
+		if error_count == 0:
 			sys.stdout.write('All ok%s' % delim)
 		else:
-			sys.stdout.write('Found %d error(s)%s' % (state['error_count'], delim))
+			sys.stdout.write('Found %d error(s)%s' % (error_count, delim))
 			sys.exit(1)
 
 	elif args.command == 'unpack':

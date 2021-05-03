@@ -285,9 +285,26 @@ class Pak(object):
 				callback(None, 'data bleeds into index')
 
 			# test file sha1 sum
-			# XXX: I don't know if the sha1 is of the comressed (and encrypted) data
-			#      or if it would need to uncompress (and decrypt) the data first.
-			check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
+			if ignore_null_checksums and r1.sha1 == b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00':
+				pass
+			elif r1.compression_blocks is None:
+				check_data(r1, r1.data_offset, r1.compressed_size, r1.sha1)
+			else:
+				hasher = hashlib.sha1()
+				base_offset = r1.base_offset
+				for start_offset, end_offset in r1.compression_blocks:
+					block_size = end_offset - start_offset
+					stream.seek(base_offset + start_offset, 0)
+					data = stream.read(block_size)
+					hasher.update(data)
+				
+				if hasher.digest() != r1.sha1:
+					callback(r1,
+							'checksum missmatch:\n'
+							'\tgot:      %s\n'
+							'\texpected: %s' % (
+								hasher.hexdigest(),
+								hexlify(r1.sha1).decode('latin1')))
 
 	def unpack(self, stream: io.BufferedReader, outdir: str=".", callback: Callable[[str], None] = lambda name: None) -> None:
 		for record in self:
@@ -454,7 +471,7 @@ class Record(NamedTuple):
 			if self.encrypted:
 				raise NotImplementedError('zlib decompression with encryption is not implemented yet')
 			assert self.compression_blocks is not None
-			base_offset = self.offset
+			base_offset = self.base_offset
 			for start_offset, end_offset in self.compression_blocks:
 				block_size = end_offset - start_offset
 				infile.seek(base_offset + start_offset)
@@ -464,6 +481,10 @@ class Record(NamedTuple):
 				outfile.write(block_decompress)
 		else:
 			raise NotImplementedError('decompression is not implemented yet')
+
+	@property
+	def base_offset(self):
+		return 0
 
 	def read(self, data: Union[memoryview, bytes, mmap.mmap], offset: int, size: int) -> bytes:
 		if self.compression_method == COMPR_NONE:
@@ -573,22 +594,12 @@ class RecordV3(Record):
 			size += len(self.compression_blocks) * 16
 		return size
 
-class RecordV4(Record):
-	__slots__ = ()
-
-	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, sha1: bytes,
-				compression_blocks: Optional[List[Tuple[int, int]]], encrypted: bool, compression_block_size: Optional[int]):
-		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-							  compression_method, None, sha1, compression_blocks, encrypted,
-							  compression_block_size)
-
+# XXX: Don't know at which version exactly the change happens.
+#      Only know 4 is relative, 7 is absolute.
+class RecordV7(RecordV3):
 	@property
-	def header_size(self):
-		size = 57
-		if self.compression_method != COMPR_NONE:
-			assert self.compression_blocks is not None
-			size += len(self.compression_blocks) * 16
-		return size
+	def base_offset(self):
+		return self.offset
 
 def read_path(stream: io.BufferedReader, encoding: str = 'utf-8') -> str:
 	path_len, = st_unpack('<I',stream.read(4))
@@ -626,25 +637,24 @@ def read_record_v3(stream: io.BufferedReader, filename: str) -> RecordV3:
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
 
-def read_record_v4(stream: IO[bytes], filename: str) -> RecordV4:
-	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
-		st_unpack('<QQQI20s', stream.read(48))
+read_record_v4 = read_record_v3
 
-	# sys.stdout.write('compression_method = %s\n' % compression_method)
+def read_record_v7(stream: io.BufferedReader, filename: str) -> RecordV3:
+	offset, compressed_size, uncompressed_size, compression_method, sha1 = \
+		st_unpack('<QQQI20s',stream.read(48))
+
 	blocks: Optional[List[Tuple[int, int]]]
 	if compression_method != COMPR_NONE:
-		block_count, = st_unpack('<I', stream.read(4))
+		block_count, = st_unpack('<I',stream.read(4))
 		blocks_bin = st_unpack('<%dQ' % (block_count * 2), stream.read(16 * block_count))
-		blocks = [(blocks_bin[i], blocks_bin[i + 1]) for i in range(0, block_count * 2, 2)]
+		blocks = [(blocks_bin[i], blocks_bin[i+1]) for i in range(0, block_count * 2, 2)]
 	else:
 		blocks = None
 
-	encrypted, compression_block_size, unknown = st_unpack('<BII', stream.read(9))
+	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
-	return RecordV4(filename, offset, compressed_size, uncompressed_size, compression_method,
+	return RecordV7(filename, offset, compressed_size, uncompressed_size, compression_method,
 					sha1, blocks, encrypted != 0, compression_block_size)
-
-read_record_v7 = read_record_v3
 
 def write_data(
 		archive: io.BufferedWriter,
@@ -834,7 +844,7 @@ def write_record_v3(
 	archive.write(record)
 
 	if compression_method == COMPR_ZLIB:
-		compressed_size, sha1,block_count, blocks = write_data_zlib(archive,fh,size,compression_method,encrypted,compression_block_size)
+		compressed_size, sha1, block_count, blocks = write_data_zlib(archive,fh,size,compression_method,encrypted,compression_block_size)
 	else:
 		record = st_pack('<BI',int(encrypted),compression_block_size)
 		archive.write(record)

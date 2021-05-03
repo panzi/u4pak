@@ -11,8 +11,13 @@ Basic usage:
     u4pak.py pack <archive> <files>         - create .pak archive
     u4pak.py mount <archive> <mount-point>  - mount archive as read-only file system
 
-Only unencryped and uncompressed archives of version 1, 2, 3 and 4 are supported.
-Note that only version 2 and 3 are tested and version 4 is read-only.
+For unpacking only unencryped archives of version 1, 2, 3, 4, and 7 are supported,
+for packing only version 1, 2, and 3.
+
+**NOTE:** If you know (cheap) games that use other archive versions please tell me!
+Especially if its 5 or 6. There is a change in how certain offsets are handled at
+some point, but since I only have an example file of version 7 I don't know if it
+happened in version 5, 6, or 7.
 
 The `mount` command depends on the [llfuse](https://code.google.com/p/python-llfuse/)
 Python package. If it's not available the rest is still working.
@@ -55,6 +60,12 @@ In order to parse a file you need to read the footer first. The footer contains
 an offset pointer to the start of the index records. The index records then
 contain offset pointers to the data records.
 
+Some games seem to zero out parts of the file. In particular the footer, which
+makes it pretty much impossible to read the file without manual analysis and
+guessing. I suspect these games have the footer included somewhere in the game
+binary. If it's not obfuscated one might be able to find it using the file
+magic (given that the file magic is even included)?
+
 ### Record
 
     Offset  Size  Type         Description
@@ -78,21 +89,21 @@ contain offset pointers to the data records.
          ?     1  uint8_t      is encrypted
        ?+1     4  uint32_t     compression block size
     end
-    if version >= 4
-         ?     1  uint32_t     unknown
-    end
 
 ### Compression Block (CB)
 
 Size: 16 bytes
 
     Offset  Size  Type         Description
-         0     8  uint64_t     start offset:
-                               Absolute offset of the start of the compression block.
-         8     8  uint64_t     end offset:
-                               Absolute offset of the end of the compression block.
-                               This may not align completely with the start of the
-                               next block.
+         0     8  uint64_t     compressed data block start offset.
+                               version <= 4: offset is absolute to the file
+                               version 7: offset is relative to the offset
+                                          field in the corresponding Record
+         8     8  uint64_t     compressed data block end offset.
+                               There may or may not be a gap between blocks.
+                               version <= 4: offset is absolute to the file
+                               version 7: offset is relative to the offset
+                                          field in the corresponding Record
 
 ### Data Record
 
@@ -121,7 +132,7 @@ Size: 44 bytes
 
     Offset  Size  Type         Description
          0     4  uint32_t     magic: 0x5A6F12E1
-         4     4  uint32_t     version: 1, 2, or 3
+         4     4  uint32_t     version: 1, 2, 3, 4, or 7
          8     8  uint64_t     index offset
         16     8  uint64_t     index size
         24    20  uint8_t[20]  index sha1 hash
@@ -132,8 +143,10 @@ Related Projects
 * [fezpak](https://github.com/panzi/fezpak): pack, unpack, list and mount FEZ .pak archives
 * [psypkg](https://github.com/panzi/psypkg): pack, unpack, list and mount Psychonauts .pkg archives
 * [bgebf](https://github.com/panzi/bgebf): unpack, list and mount Beyond Good and Evil .bf archives
-* [unvpk](https://bitbucket.org/panzi/unvpk): extract, list, check and mount Valve .vpk archives
+* [unvpk](https://github.com/panzi/unvpk): extract, list, check and mount Valve .vpk archives
+* [rust-vpk](https://github.com/panzi/rust-vpk/): Rust rewrite of the above
 * [t2fbq](https://github.com/panzi/t2fbq): unpack, list and mount Trine 2 .fbq archives
+* [rust-u4pak](https://github.com/panzi/rust-u4pak): not yet finished Rust rewrite of this script
 
 BSD License
 -----------

@@ -607,7 +607,7 @@ def read_path(stream: io.BufferedReader, encoding: str = 'utf-8') -> str:
 
 def pack_path(path: str, encoding: str = 'utf-8') -> bytes:
 	encoded_path = path.replace(os.path.sep, '/').encode('utf-8') + b'\0'
-	return st_pack('<I', len(path)) + encoded_path
+	return st_pack('<I', len(encoded_path)) + encoded_path
 
 def write_path(stream: io.BufferedWriter, path: str, encoding: str = 'utf-8') -> bytes:
 	data = pack_path(path,encoding)

@@ -486,7 +486,10 @@ class Record(NamedTuple):
 	def base_offset(self):
 		return 0
 
-	def read(self, data: Union[memoryview, bytes, mmap.mmap], offset: int, size: int) -> bytes:
+	def read(self, data: Union[memoryview, bytes, mmap.mmap], offset: int, size: int) -> Union[bytes, bytearray]:
+		if self.encrypted:
+			raise NotImplementedError('decryption is not supported')
+
 		if self.compression_method == COMPR_NONE:
 			uncompressed_size = self.uncompressed_size
 
@@ -497,35 +500,33 @@ class Record(NamedTuple):
 			j = i + min(uncompressed_size - offset, size)
 			return data[i:j]
 		elif self.compression_method == COMPR_ZLIB:
-			if self.encrypted:
-				raise NotImplementedError('zlib decompression with encryption is not implemented yet')
-
-			# This is reeeeally inefficient
-			# TODO: remember uncompressed offsets and do faster seeking
 			assert self.compression_blocks is not None
-			base_offset = self.offset
-			buf: List[bytes] = []
-			current_offset = 0
+			base_offset = self.base_offset
+			buffer = bytearray()
 			end_offset = offset + size
-			for block_start_offset, block_end_offset in self.compression_blocks:
-				if current_offset >= end_offset:
-					break
+
+			compression_block_size = self.compression_block_size
+			assert compression_block_size
+			start_block_index = offset // compression_block_size
+			end_block_index   = end_offset // compression_block_size
+
+			current_offset = offset * start_block_index
+			for block_start_offset, block_end_offset in self.compression_blocks[start_block_index:end_block_index + 1]:
 				block_size = block_end_offset - block_start_offset
 
 				block_content = data[base_offset + block_start_offset:base_offset + block_end_offset]
 				block_decompress = zlib.decompress(block_content)
 
 				next_offset = current_offset + len(block_decompress)
-				if next_offset > offset:
-					if current_offset >= offset:
-						buf.append(block_decompress[:end_offset - current_offset])
-					else:
-						buf.append(block_decompress[offset - current_offset:end_offset - current_offset])
+				if current_offset >= offset:
+					buffer.extend(block_decompress[:end_offset - current_offset])
+				else:
+					buffer.extend(block_decompress[offset - current_offset:end_offset - current_offset])
 
 				current_offset = next_offset
-			return b''.join(buf)
+			return buffer
 		else:
-			raise NotImplementedError(f'decompression method {self.compression_method} is not implemented yet')
+			raise NotImplementedError(f'decompression method {self.compression_method} is not supported')
 
 	def unpack(self, stream: io.BufferedReader, outdir: str = ".", callback: Callable[[str], None] = lambda name: None) -> None:
 		prefix, name = os.path.split(self.filename)

@@ -510,7 +510,7 @@ class Record(NamedTuple):
 			start_block_index = offset // compression_block_size
 			end_block_index   = end_offset // compression_block_size
 
-			current_offset = offset * start_block_index
+			current_offset = compression_block_size * start_block_index
 			for block_start_offset, block_end_offset in self.compression_blocks[start_block_index:end_block_index + 1]:
 				block_size = block_end_offset - block_start_offset
 

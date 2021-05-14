@@ -42,8 +42,6 @@ If you get an error message about the archive version being 0 try to pass
 File Format
 -----------
 
-Only what is absolutely necesarry to read archives is reverse engineered.
-
 Byte order is little endian and the character encoding of file names seems to be
 ASCII (or ISO-8859-1/UTF-8 that coincidentally only uses ASCII compatiple
 characters).
@@ -95,8 +93,8 @@ magic (given that the file magic is even included)?
       ?+24  M*16  CB[M]        compression blocks
      end
          ?     1  uint8_t      is encrypted
-       ?+1     4  uint32_t     compression block size
-    end
+       ?+1     4  uint32_t     The uncompressed size of each compression block.
+    end                        The last block can be smaller, of course.
 
 ### Compression Block (CB)
 
@@ -123,14 +121,14 @@ Size: 16 bytes
 
     Offset  Size  Type            Description
          0     4  uint32_t        file name size (S)
-         4     S  char[S]         file name
+         4     S  char[S]         file name (includes terminating null byte)
        4+S     ?  Record          file metadata
 
 ### Index
 
     Offset  Size  Type            Description
          0     4  uint32_t        mount point size (S)
-         4     S  char[S]         mount point
+         4     S  char[S]         mount point (includes terminating null byte)
        S+4     4  uint32_t        record count (N)
        S+8     ?  IndexRecord[N]  records
 

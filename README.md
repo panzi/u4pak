@@ -3,6 +3,14 @@ u4pak
 
 Unpack, pack, list, test and mount Unreal Engine 4 .pak archives.
 
+**NOTE:** I've wrote an [alternative version](https://github.com/panzi/rust-u4pak)
+of this in Rust and compiled a [self-contained binary](https://github.com/panzi/rust-u4pak/releases)
+for Windows users. So there is no hassle with installing Python, plus it adds a
+way to supply command line arguments via a file that you can associate with the
+binary so you only need to double click that. It is also faster, mainly because
+it uses multi-threading. (Note that it's command line arguments are sligthly
+different.)
+
 Basic usage:
 
     u4pak.py list <archive>                 - list contens of .pak archive

@@ -13,6 +13,7 @@ different.)
 
 Basic usage:
 
+    u4pak.py info <archive>                 - print archive summary info
     u4pak.py list <archive>                 - list contens of .pak archive
     u4pak.py test <archive>                 - test archive integrity
     u4pak.py unpack <archive>               - extract .pak archive

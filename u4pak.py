@@ -603,8 +603,12 @@ class RecordV7(RecordV3):
 		return self.offset
 
 def read_path(stream: io.BufferedReader, encoding: str = 'utf-8') -> str:
-	path_len, = st_unpack('<I',stream.read(4))
-	return stream.read(path_len).rstrip(b'\0').decode(encoding).replace('/',os.path.sep)
+	path_len, = st_unpack('<i',stream.read(4))
+	if path_len < 0:
+		# in at least some format versions, this indicates a UTF-16 path
+		path_len = -2 * path_len
+		encoding = 'utf-16le'
+	return stream.read(path_len).decode(encoding).rstrip('\0').replace('/',os.path.sep)
 
 def pack_path(path: str, encoding: str = 'utf-8') -> bytes:
 	encoded_path = path.replace(os.path.sep, '/').encode('utf-8') + b'\0'

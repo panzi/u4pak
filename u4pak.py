@@ -68,7 +68,7 @@ def highlevel_sendfile(outfile: io.BufferedWriter, infile: io.BufferedReader, of
 			size = 0
 
 if hasattr(os, 'sendfile'):
-	def sendfile(outfile: io.BufferedWriter, infile: io.BufferedReader, offset: int, size: int) -> None:
+	def os_sendfile(outfile: io.BufferedWriter, infile: io.BufferedReader, offset: int, size: int) -> None:
 		try:
 			out_fd = outfile.fileno()
 			in_fd  = infile.fileno()
@@ -78,6 +78,7 @@ if hasattr(os, 'sendfile'):
 			# size == 0 has special meaning for some sendfile implentations
 			if size > 0:
 				os.sendfile(out_fd, in_fd, offset, size)
+	sendfile = os_sendfile
 else:
 	sendfile = highlevel_sendfile
 
@@ -234,6 +235,9 @@ class Pak(object):
 
 		elif self.version == 7:
 			read_record = read_record_v7
+
+		else:
+			raise ValueError(f'unsupported version: {self.version}')
 
 		def check_data(ctx, offset, size, sha1):
 			if ignore_null_checksums and sha1 == b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00':
@@ -561,7 +565,7 @@ class RecordV1(Record):
 
 	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, timestamp: Optional[int], sha1: bytes) -> RecordV1:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-							  compression_method, timestamp, sha1, None, False, None)
+							  compression_method, timestamp, sha1, None, False, None) # type: ignore
 
 	@property
 	def header_size(self) -> int:
@@ -572,7 +576,7 @@ class RecordV2(Record):
 
 	def __new__(cls, filename: str, offset: int, compressed_size: int, uncompressed_size: int, compression_method: int, sha1: bytes) -> RecordV2:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
-							  compression_method, None, sha1, None, False, None)
+							  compression_method, None, sha1, None, False, None) # type: ignore
 
 	@property
 	def header_size(self):
@@ -585,7 +589,7 @@ class RecordV3(Record):
 				compression_blocks: Optional[List[Tuple[int, int]]], encrypted: bool, compression_block_size: Optional[int]) -> RecordV3:
 		return Record.__new__(cls, filename, offset, compressed_size, uncompressed_size,
 							  compression_method, None, sha1, compression_blocks, encrypted,
-							  compression_block_size)
+							  compression_block_size) # type: ignore
 
 	@property
 	def header_size(self) -> int:
@@ -640,7 +644,7 @@ def read_record_v3(stream: io.BufferedReader, filename: str) -> RecordV3:
 	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
 	return RecordV3(filename, offset, compressed_size, uncompressed_size, compression_method,
-					sha1, blocks, encrypted != 0, compression_block_size)
+					sha1, blocks, encrypted != 0, compression_block_size) # type: ignore
 
 read_record_v4 = read_record_v3
 
@@ -659,7 +663,7 @@ def read_record_v7(stream: io.BufferedReader, filename: str) -> RecordV3:
 	encrypted, compression_block_size = st_unpack('<BI',stream.read(5))
 
 	return RecordV7(filename, offset, compressed_size, uncompressed_size, compression_method,
-					sha1, blocks, encrypted != 0, compression_block_size)
+					sha1, blocks, encrypted != 0, compression_block_size) # type: ignore
 
 def write_data(
 		archive: io.BufferedWriter,
@@ -990,6 +994,19 @@ def write_index(stream: IO[bytes], version: int, mount_point: str, records: List
 	index_sha1 = hasher.digest()
 	stream.write(st_pack('<IIQQ20s', 0x5A6F12E1, version, index_offset, index_size, index_sha1))
 
+def make_record_v1(filename: str) -> RecordV1:
+	st   = os.stat(filename)
+	size = st.st_size
+	return RecordV1(filename, -1, size, size, COMPR_NONE, int(st.st_mtime), b'') # type: ignore
+
+def make_record_v2(filename: str) -> RecordV2:
+	size = os.path.getsize(filename)
+	return RecordV2(filename, -1, size, size, COMPR_NONE, b'') # type: ignore
+
+def make_record_v3(filename: str) -> RecordV3:
+	size = os.path.getsize(filename)
+	return RecordV3(filename, -1, size, size, COMPR_NONE, b'', None, False, 0) # type: ignore
+
 # TODO: untested!
 # removes, inserts and updates files, rewrites index, truncates archive if neccesarry
 def update(stream: io.BufferedRandom, mount_point: str, insert: Optional[List[str]] = None, remove: Optional[List[str]] = None, compression_method: int = COMPR_NONE,
@@ -1006,22 +1023,15 @@ def update(stream: io.BufferedRandom, mount_point: str, insert: Optional[List[st
 	make_record: Callable[[str], Record]
 	if pak.version == 1:
 		write_record = write_record_v1
-		def make_record(filename: str) -> RecordV1:
-			st   = os.stat(filename)
-			size = st.st_size
-			return RecordV1(filename, -1, size, size, COMPR_NONE, int(st.st_mtime), b'')
+		make_record  = make_record_v1
 
 	elif pak.version == 2:
 		write_record = write_record_v2
-		def make_record(filename: str) -> RecordV2:
-			size = os.path.getsize(filename)
-			return RecordV2(filename, -1, size, size, COMPR_NONE, b'')
+		make_record  = make_record_v2
 
 	elif pak.version == 3:
 		write_record = write_record_v3
-		def make_record(filename: str) -> RecordV3:
-			size = os.path.getsize(filename)
-			return RecordV3(filename, -1, size, size, COMPR_NONE, b'', None, False, 0)
+		make_record  = make_record_v3
 
 	else:
 		raise ValueError('version not supported: %d' % pak.version)
@@ -1670,7 +1680,8 @@ def deamonize(stdout: str = '/dev/null', stderr: Optional[str] = None, stdin: st
 
 def main(argv: List[str]) -> None:
 	parser = argparse.ArgumentParser(description='unpack, list and mount Unreal Engine 4 .pak archives')
-	parser.set_defaults(print0=False,verbose=False,progress=False,zlib=False,command=None)
+	parser.set_defaults(print0=False,verbose=False,progress=False,zlib=False,command=None,no_sendfile=False,global_debug=False)
+	add_debug_arg(parser)
 
 	subparsers = parser.add_subparsers(metavar='command')
 
@@ -1682,6 +1693,7 @@ def main(argv: List[str]) -> None:
 							   help='show progress')
 	add_hack_args(unpack_parser)
 	add_common_args(unpack_parser)
+	add_no_sendfile_arg(unpack_parser)
 	unpack_parser.add_argument('files', metavar='file', nargs='*', help='files and directories to unpack')
 
 	pack_parser = subparsers.add_parser('pack',aliases=('c',),help="pack archive")
@@ -1689,7 +1701,7 @@ def main(argv: List[str]) -> None:
 	pack_parser.add_argument('--archive-version',type=int,choices=[1,2,3],default=3,help='archive file format version')
 	pack_parser.add_argument('--mount-point',type=str,default=os.path.join('..','..','..',''),help='archive mount point relative to its path')
 	pack_parser.add_argument('-z', '--zlib',action='store_true',default=False,help='use zlib compress')
-	pack_parser.add_argument('-p','--progress',action='store_true',default=False,
+	pack_parser.add_argument('-p', '--progress',action='store_true',default=False,
 							 help='show progress')
 	add_print0_arg(pack_parser)
 	add_verbose_arg(pack_parser)
@@ -1734,15 +1746,26 @@ def main(argv: List[str]) -> None:
 
 	args = parser.parse_args(argv)
 
+	if args.command is None:
+		parser.print_help()
+
+	elif args.global_debug:
+		_main(args)
+
+	else:
+		try:
+			_main(args)
+		except (ValueError, NotImplementedError, IOError) as exc:
+			sys.stderr.write("%s\n" % exc)
+			sys.exit(1)
+
+def _main(args: argparse.Namespace) -> None:
 	delim = '\0' if args.print0 else '\n'
 
 	stream:  io.BufferedReader
 	wstream: io.BufferedWriter
 
-	if args.command is None:
-		parser.print_help()
-
-	elif args.command == 'list':
+	if args.command == 'list':
 		with open(args.archive, "rb") as stream: # type: ignore
 			pak = read_index(stream, args.check_integrity, args.ignore_magic, args.encoding, args.force_version, args.ignore_null_checksums)
 			pak.print_list(args.details,args.human,delim,args.sort_key_func,sys.stdout)
@@ -1779,6 +1802,10 @@ def main(argv: List[str]) -> None:
 			sys.exit(1)
 
 	elif args.command == 'unpack':
+		if args.no_sendfile:
+			global sendfile
+			sendfile = highlevel_sendfile
+
 		if args.verbose:
 			def unpack_callback(name: str) -> None:
 				sys.stdout.write("%s%s" % (name, delim))
@@ -1865,6 +1892,14 @@ def add_hack_args(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument('--force-version',type=int,default=None,
 						help='use this format version when parsing the file instead of the version read from the archive')
 
+def add_no_sendfile_arg(parser: argparse.ArgumentParser) -> None:
+	parser.add_argument('--no-sendfile',action='store_true',default=False,
+						help="don't use sendfile system call. Try this if you get an IOError during unpacking.")
+
+def add_debug_arg(parser: argparse.ArgumentParser) -> None:
+	parser.add_argument('-d', '--debug',action='store_true',default=False,dest='global_debug',
+						help="print stacktrace on error")
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
 	add_print0_arg(parser)
 	add_verbose_arg(parser)
@@ -1872,8 +1907,4 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 	add_archive_arg(parser)
 
 if __name__ == '__main__':
-	try:
-		main(sys.argv[1:])
-	except (ValueError, NotImplementedError, IOError) as exc:
-		sys.stderr.write("%s\n" % exc)
-		sys.exit(1)
+	main(sys.argv[1:])
